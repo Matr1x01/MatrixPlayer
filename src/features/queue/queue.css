@@ -1,8 +1,8 @@
 @layer components {
-  /* Queue rows (Queue board), without the reorder grip until drag and drop. */
+  /* Queue rows (Queue board): grip, number, art, title, album, format, time, remove. */
   .qr {
     display: grid;
-    grid-template-columns: 26px 36px minmax(0, 1.3fr) minmax(0, 1fr) 96px 44px 32px;
+    grid-template-columns: 18px 26px 36px minmax(0, 1.3fr) minmax(0, 1fr) 96px 44px 32px;
     column-gap: 14px;
     align-items: center;
     height: 46px;
@@ -26,6 +26,42 @@
   .qr:hover .rm,
   .qr:focus-within .rm {
     opacity: 1;
+  }
+  .qr .gp {
+    display: inline-flex;
+    color: var(--tx3);
+    opacity: 0.55;
+    cursor: grab;
+    touch-action: none;
+    transition: opacity var(--t-micro) var(--ease), color var(--t-micro) var(--ease);
+  }
+  .qr:hover .gp { opacity: 1; }
+  .qr .gp:active { cursor: grabbing; }
+  .qr.ghost { border: 1px dashed var(--ln2); background: transparent; }
+  .qr.ghost > * { opacity: 0 !important; }
+  .qr.drag {
+    background: var(--bg4);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--ln2);
+    transform: translate(10px, -6px) rotate(0.4deg);
+    z-index: 4;
+    pointer-events: none;
+    animation: lift 160ms var(--ease-spring, ease);
+  }
+  .qr.drag .gp { opacity: 1; color: var(--tx); }
+  @keyframes lift {
+    from { transform: none; box-shadow: none; }
+  }
+  .drop-line {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    height: 2px;
+    margin-top: -1px;
+    background: var(--ac);
+    border-radius: 1px;
+    z-index: 3;
+    box-shadow: 0 0 8px var(--acm);
+    transition: top 90ms var(--ease);
   }
 
   .q-now {

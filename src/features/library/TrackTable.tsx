@@ -231,6 +231,8 @@ interface TrackTableProps {
   menuExtra?: (positions: number[]) => MenuItem[];
   /** Delete key on a selection (e.g. remove from playlist). */
   onDelete?: (positions: number[]) => void;
+  /** Alt+↑ / Alt+↓ on a selection: move it to start at `to` (playlists). */
+  onMove?: (positions: number[], to: number) => void;
   /** Summary on the right of the footer; omit to hide the footer. */
   footer?: ReactNode;
   empty?: ReactNode;
@@ -252,6 +254,7 @@ export function TrackTable({
   onPlay,
   menuExtra,
   onDelete,
+  onMove,
   footer,
   empty,
   revealPlaying,
@@ -351,11 +354,22 @@ export function TrackTable({
     let handled = true;
     switch (e.key) {
       case 'ArrowDown':
-        move(current + 1);
+      case 'ArrowUp': {
+        const down = e.key === 'ArrowDown';
+        if (e.altKey && onMove && chosen.length) {
+          const first = chosen[0]!;
+          const to = down ? Math.min(ids.length - chosen.length, first + 1) : Math.max(0, first - 1);
+          if (to !== first) {
+            onMove(chosen, to);
+            setSelected(new Set(chosen.map((_, i) => to + i)));
+            setFocus(to);
+            setAnchor(to);
+          }
+          break;
+        }
+        move(current + (down ? 1 : -1));
         break;
-      case 'ArrowUp':
-        move(current - 1);
-        break;
+      }
       case 'PageDown':
         move(current + page);
         break;

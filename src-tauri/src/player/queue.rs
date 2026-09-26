@@ -27,6 +27,9 @@ pub enum RepeatMode {
 pub struct QueueEntry {
     pub id: EntryId,
     pub track: Arc<TrackInfo>,
+    /// Queued with "play next" or "add to queue", rather than as part of
+    /// what was started (an album, a folder…).
+    pub added: bool,
 }
 
 /// Where newly opened tracks go.
@@ -99,7 +102,7 @@ impl Queue {
         for track in tracks {
             let id = self.next_id;
             self.next_id += 1;
-            self.entries.push(QueueEntry { id, track });
+            self.entries.push(QueueEntry { id, track, added: mode != InsertMode::Replace });
         }
         let mut new: Vec<usize> = (first_new..self.entries.len()).collect();
 

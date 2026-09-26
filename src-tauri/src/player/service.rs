@@ -26,6 +26,25 @@ const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 /// How often a changed volume is written to the database.
 const PERSIST_INTERVAL: Duration = Duration::from_secs(2);
 
+pub const SESSION_KEY: &str = "player.session";
+
+/// The queue as saved between runs. Library tracks are found again by id;
+/// other files by path.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSession {
+    pub entries: Vec<SavedEntry>,
+    pub current: Option<usize>,
+    pub position_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedEntry {
+    pub track_id: Option<i64>,
+    pub path: String,
+}
+
 /// Persisted player preferences, restored at startup.
 #[derive(Debug, Clone)]
 pub struct PlayerSettings {
@@ -75,6 +94,13 @@ pub enum PlayerCommand {
     },
     /// Keeps only the current entry.
     ClearOthers,
+    /// Puts back a saved session: the queue, the current entry and the
+    /// position within it, paused.
+    Restore {
+        tracks: Vec<Arc<TrackInfo>>,
+        start: usize,
+        position: Duration,
+    },
     ClearQueue,
 }
 
@@ -159,6 +185,10 @@ struct Player {
     volume: f64,
     muted: bool,
     saved_volume: (f64, bool),
+    /// The queue or position changed since the session was last saved.
+    session_dirty: bool,
+    /// A position to seek to once a restored track has loaded.
+    pending_seek: Option<Duration>,
 
     error: Option<PlayerError>,
     /// Failures since the last track that played, to stop skipping through
@@ -193,6 +223,8 @@ impl Player {
             volume: settings.volume.clamp(0.0, 1.0),
             muted: settings.muted,
             saved_volume: (settings.volume, settings.muted),
+            session_dirty: false,
+            pending_seek: None,
             error: None,
             failures: 0,
             decoded: None,
@@ -224,6 +256,9 @@ impl Player {
                     }
                     Some(Request::Flush(reply)) => {
                         self.persist_volume().await;
+                        // Keep the exact position of the track being left.
+                        self.session_dirty |= self.queue.current().is_some();
+                        self.persist_session().await;
                         let _ = reply.send(());
                     }
                     None => break,
@@ -235,10 +270,14 @@ impl Player {
                         self.on_engine(message.event);
                     }
                 }
-                _ = persist.tick() => self.persist_volume().await,
+                _ = persist.tick() => {
+                    self.persist_volume().await;
+                    self.persist_session().await;
+                }
             }
         }
         self.persist_volume().await;
+        self.persist_session().await;
     }
 
     // ── commands ────────────────────────────────────────────────────────────
@@ -295,6 +334,13 @@ impl Player {
                     self.update_next();
                 }
                 Ok(())
+            }
+            PlayerCommand::Restore { tracks, start, position } => {
+                self.queue.insert(tracks, InsertMode::Replace, start);
+                self.emit_queue();
+                self.failures = 0;
+                self.pending_seek = (position > Duration::from_secs(1)).then_some(position);
+                self.load_current(false)
             }
             PlayerCommand::ClearOthers => {
                 self.queue.clear_others();
@@ -506,6 +552,13 @@ impl Player {
             }
             EngineEvent::StreamStarted { uri, gapless: true } => self.on_gapless_switch(&uri),
             EngineEvent::StreamStarted { .. } => {}
+            EngineEvent::AsyncDone if self.pending_seek.is_some() && !self.loading => {
+                if let Some(position) = self.pending_seek.take()
+                    && let Err(e) = self.seek(position)
+                {
+                    log::debug!("could not restore the position: {e}");
+                }
+            }
             EngineEvent::AsyncDone => {
                 if self.seeking {
                     self.seeking = false;
@@ -675,6 +728,30 @@ impl Player {
         }
     }
 
+    /// Saves the queue, the current entry and the position, so the session
+    /// can be restored after a restart.
+    async fn persist_session(&mut self) {
+        if !self.session_dirty {
+            return;
+        }
+        let (entries, current) = self.queue.play_order();
+        let session = SavedSession {
+            entries: entries
+                .iter()
+                .map(|e| SavedEntry {
+                    track_id: e.track.library.map(|l| l.track_id),
+                    path: e.track.path.to_string_lossy().into_owned(),
+                })
+                .collect(),
+            current,
+            position_ms: millis(self.position),
+        };
+        match settings::set(&self.db, SESSION_KEY, &session).await {
+            Ok(()) => self.session_dirty = false,
+            Err(e) => log::warn!("could not save the session: {e}"),
+        }
+    }
+
     fn queue_snapshot(&self) -> QueueSnapshot {
         let (entries, current_index) = self.queue.play_order();
         QueueSnapshot { entries, current_index, shuffle: self.queue.shuffle(), repeat: self.queue.repeat() }
@@ -702,17 +779,20 @@ impl Player {
         let _ = self.events.send(event);
     }
 
-    fn emit_track(&self) {
+    fn emit_track(&mut self) {
+        self.session_dirty = true;
         self.emit(PlayerEvent::Track { track: self.queue.current().map(|e| e.track.clone()) });
     }
 
     /// The whole queue: only after its contents or order changed.
-    fn emit_queue(&self) {
+    fn emit_queue(&mut self) {
+        self.session_dirty = true;
         self.emit(PlayerEvent::Queue(self.queue_snapshot()));
     }
 
     /// Cursor and modes only, which is all that changes on a track change.
-    fn emit_queue_state(&self) {
+    fn emit_queue_state(&mut self) {
+        self.session_dirty = true;
         self.emit(PlayerEvent::QueueState(QueueState {
             current_index: self.queue.current_index(),
             shuffle: self.queue.shuffle(),
@@ -884,5 +964,27 @@ mod tests {
         h.player.command(PlayerCommand::Seek(Duration::from_secs(60))).await.unwrap();
         let clamped = h.player.snapshot().await.unwrap();
         assert!(clamped.position_ms <= clamped.duration_ms.unwrap(), "seeks are clamped to the duration");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restores_a_session_paused_at_its_position() {
+        let mut h = harness().await;
+        let (a, b) = (h.dir.path().join("a.flac"), h.dir.path().join("b.flac"));
+        write_flac(&a, 1.0, "First");
+        write_flac(&b, 4.0, "Second");
+        let tracks = [a, b].iter().map(|p| Arc::new(TrackInfo::load(p, &h.artwork))).collect();
+        h.player
+            .command(PlayerCommand::Restore { tracks, start: 1, position: Duration::from_millis(2500) })
+            .await
+            .unwrap();
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Position { position_ms, .. } if *position_ms >= 2000))
+            .await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Paused)).await;
+
+        let snapshot = h.player.snapshot().await.unwrap();
+        assert_eq!(snapshot.track.unwrap().metadata.title, "Second");
+        assert_eq!(snapshot.queue.current_index, Some(1));
+        assert!((2400..=2600).contains(&snapshot.position_ms), "position: {}", snapshot.position_ms);
+        assert!(snapshot.queue.entries.iter().all(|e| !e.added), "a restored queue is not 'added by you'");
     }
 }

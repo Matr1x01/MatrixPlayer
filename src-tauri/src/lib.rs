@@ -91,6 +91,8 @@ pub fn run() {
             commands::queue::queue_clear,
             commands::queue::queue_clear_others,
             commands::queue::queue_move,
+            commands::queue::queue_saved_session,
+            commands::queue::queue_restore_session,
             commands::queue::open_audio_files,
             commands::queue::open_audio_folder,
             commands::library::library_stats,

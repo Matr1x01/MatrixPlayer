@@ -76,6 +76,8 @@ export interface TrackInfo {
 export interface QueueEntry {
   id: number;
   track: TrackInfo;
+  /** Queued with "play next" / "add to queue" rather than started. */
+  added: boolean;
 }
 
 export interface QueueSnapshot {

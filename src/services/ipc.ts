@@ -48,6 +48,9 @@ export const queueApi = {
   removeEntry: (id: number) => invoke<void>('queue_remove_entry', { id }),
   clear: () => invoke<void>('queue_clear'),
   clearOthers: () => invoke<void>('queue_clear_others'),
+  savedSession: () => invoke<{ tracks: number } | null>('queue_saved_session'),
+  /** Restores the queue from the last run, paused where it was. */
+  restoreSession: () => invoke<number>('queue_restore_session'),
   /** Moves entries before `before`, or to the end when it is null. */
   move: (ids: number[], before: number | null) => invoke<void>('queue_move', { ids, before }),
   /** Opens the native file dialog; resolves to the number of tracks queued. */

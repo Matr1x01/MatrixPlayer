@@ -18,7 +18,7 @@ use crate::audio::{EngineErrorKind, OutputBackend, StreamFormat};
 use crate::metadata::{self, AudioProperties, TrackMetadata};
 
 pub use queue::{EntryId, InsertMode, QueueEntry, RepeatMode};
-pub use service::{PlayerCommand, PlayerHandle, PlayerSettings};
+pub use service::{PlayerCommand, PlayerHandle, PlayerSettings, SESSION_KEY, SavedSession};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

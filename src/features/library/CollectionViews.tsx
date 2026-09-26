@@ -314,7 +314,8 @@ export function PlaylistView({ id }: { id: number }) {
           rowHeight={44}
           menuExtra={(positions) => [{ label: 'Remove from playlist', icon: 'x', shortcut: 'Del', onSelect: () => remove(positions) }]}
           onDelete={remove}
-          footer="Playlist order · Delete removes the selection"
+          onMove={(positions, to) => void run(playlistApi.move(id, positions, to))}
+          footer="Playlist order · Alt ↑↓ moves · Delete removes"
           empty={
             data && (
               <EmptyCard icon="playlist" title="This playlist is empty" className="w-[320px]">
