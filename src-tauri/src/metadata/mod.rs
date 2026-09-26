@@ -1,7 +1,7 @@
 //! Tag and stream-property extraction.
 //!
 //! Metadata comes from the file itself via `lofty`. Where a field is missing
-//! and Fermata fills it in (for example a title taken from the file name) the
+//! and MatrixPlayer fills it in (for example a title taken from the file name) the
 //! field is listed in [`TrackMetadata::derived_fields`] so the UI can show the
 //! difference between what the file says and what the application inferred.
 
@@ -16,6 +16,8 @@ use lofty::tag::{Tag, TagType};
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
+
+pub mod lyrics;
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +40,7 @@ pub struct TrackMetadata {
     pub tag_format: Option<String>,
     /// Number of tag items in that tag, for the "File" panel.
     pub tag_item_count: usize,
-    /// Fields whose value was derived by Fermata rather than read from a tag.
+    /// Fields whose value was derived by MatrixPlayer rather than read from a tag.
     pub derived_fields: Vec<&'static str>,
 }
 
@@ -113,7 +115,12 @@ fn track_metadata(path: &Path, tag: Option<&Tag>) -> TrackMetadata {
         md.album = clean(tag.album());
         md.album_artist = tag_string(tag, ItemKey::AlbumArtist);
         md.genre = clean(tag.genre());
-        md.year = tag.date().map(|d| d.year).filter(|y| *y > 0);
+        // ID3v2.3 files store the year in TYER rather than a full date.
+        md.year = tag
+            .date()
+            .map(|d| d.year)
+            .or_else(|| [ItemKey::Year, ItemKey::OriginalReleaseDate].into_iter().find_map(|k| tag_year(tag, k)))
+            .filter(|y| *y > 0);
         md.track_number = tag.track();
         md.track_total = tag.track_total();
         md.disc_number = tag.disk();
@@ -224,6 +231,13 @@ fn tag_string(tag: &Tag, key: ItemKey) -> Option<String> {
 /// Numeric tag values such as ReplayGain are stored as text, e.g. "-6.20 dB".
 fn tag_number(tag: &Tag, key: ItemKey) -> Option<f32> {
     tag.get_string(key).and_then(parse_leading_number)
+}
+
+/// The first four-digit year in a date-like tag value ("2018", "2018-03-02").
+fn tag_year(tag: &Tag, key: ItemKey) -> Option<u16> {
+    let value = tag.get_string(key)?;
+    let digits: String = value.trim().chars().take_while(char::is_ascii_digit).collect();
+    (digits.len() == 4).then(|| digits.parse().ok()).flatten()
 }
 
 fn parse_leading_number(value: &str) -> Option<f32> {

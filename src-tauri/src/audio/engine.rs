@@ -10,11 +10,14 @@ use gstreamer_audio as gst_audio;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{EngineError, EngineErrorKind, EngineEvent, EngineMessage, EngineState, StreamFormat, output};
-use crate::dsp::DspChain;
+use crate::dsp::analysis::Analyzer;
+use crate::dsp::{DspChain, DspControl};
 use crate::error::{AppError, AppResult};
 
 /// How often position is reported while playing.
 const POSITION_INTERVAL: Duration = Duration::from_millis(200);
+/// Visualizer frame interval while something watches the analysis (~30 fps).
+const ANALYSIS_INTERVAL: Duration = Duration::from_millis(33);
 
 /// State shared between the engine, its position ticker and GStreamer's
 /// streaming threads (which run the bus sync handler and `about-to-finish`).
@@ -46,17 +49,20 @@ impl Shared {
 pub struct AudioEngine {
     playbin: gst::Element,
     dsp: DspChain,
+    sink: gst::Element,
     backend: output::OutputBackend,
+    device: Option<output::OutputDevice>,
+    events: UnboundedSender<EngineMessage>,
     shared: Arc<Shared>,
-    ticker: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 impl AudioEngine {
     pub fn new(events: UnboundedSender<EngineMessage>, out: output::Output) -> AppResult<Self> {
         let playbin = gst::ElementFactory::make("playbin3")
-            .name("fermata-player")
+            .name("matrixplayer-player")
             .build()
-            .or_else(|_| gst::ElementFactory::make("playbin").name("fermata-player").build())
+            .or_else(|_| gst::ElementFactory::make("playbin").name("matrixplayer-player").build())
             .map_err(|_| AppError::Audio("GStreamer playbin is not installed".into()))?;
         // Audio only: never build video or subtitle branches, even for files
         // that carry cover art as a video stream.
@@ -65,20 +71,52 @@ impl AudioEngine {
         let shared = Arc::new(Shared::default());
         let dsp = DspChain::build()?;
         watch_caps(&dsp.input_pad(), &shared, events.clone(), EngineEvent::DecodedFormat);
-        let sink_pad = out.sink.static_pad("sink").expect("audio sinks have a sink pad");
-        watch_caps(&sink_pad, &shared, events.clone(), EngineEvent::OutputFormat);
         playbin.set_property("audio-filter", dsp.element());
-        playbin.set_property("audio-sink", &out.sink);
+        attach_sink(&playbin, &out.sink, &shared, &events);
 
         connect_gapless(&playbin, &shared);
         install_bus_handler(&playbin, &shared, events.clone());
-        let ticker = spawn_position_ticker(&playbin, &shared, events)?;
+        let threads = vec![
+            spawn_position_ticker(&playbin, &shared, events.clone())?,
+            spawn_analyzer(&playbin, &shared, dsp.control())?,
+        ];
 
-        Ok(Self { playbin, dsp, backend: out.backend, shared, ticker: Some(ticker) })
+        Ok(Self { playbin, dsp, sink: out.sink, backend: out.backend, device: out.device, events, shared, threads })
     }
 
     pub fn backend(&self) -> output::OutputBackend {
         self.backend
+    }
+
+    /// The device chosen for the output, `None` when following the default.
+    pub fn device(&self) -> Option<&output::OutputDevice> {
+        self.device.as_ref()
+    }
+
+    /// The output's buffer size, for the signal path readout.
+    pub fn buffer_ms(&self) -> Option<u32> {
+        output::Output::buffer_ms(&self.sink)
+    }
+
+    pub fn dsp(&self) -> Arc<DspControl> {
+        self.dsp.control()
+    }
+
+    /// Replaces the output sink. The pipeline is reset, so the caller
+    /// reloads whatever was playing.
+    pub fn set_output(&mut self, out: output::Output) -> AppResult<()> {
+        self.reset()?;
+        attach_sink(&self.playbin, &out.sink, &self.shared, &self.events);
+        self.sink = out.sink;
+        self.backend = out.backend;
+        self.device = out.device;
+        Ok(())
+    }
+
+    /// Pipeline running time now (ns): what is audible, since the clock
+    /// comes from the audio output.
+    pub fn running_time(&self) -> Option<u64> {
+        self.playbin.current_running_time().map(gst::ClockTime::nseconds)
     }
 
     /// The current pipeline epoch. Events from older epochs are stale.
@@ -165,8 +203,8 @@ impl Drop for AudioEngine {
         if let Some(bus) = self.playbin.bus() {
             bus.unset_sync_handler();
         }
-        if let Some(ticker) = self.ticker.take() {
-            let _ = ticker.join();
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
         }
     }
 }
@@ -208,6 +246,43 @@ fn install_bus_handler(playbin: &gst::Element, shared: &Arc<Shared>, events: Unb
     });
 }
 
+/// Makes `sink` the pipeline's output and reports the formats it receives.
+fn attach_sink(
+    playbin: &gst::Element,
+    sink: &gst::Element,
+    shared: &Arc<Shared>,
+    events: &UnboundedSender<EngineMessage>,
+) {
+    let pad = sink.static_pad("sink").expect("audio sinks have a sink pad");
+    watch_caps(&pad, shared, events.clone(), EngineEvent::OutputFormat);
+    playbin.set_property("audio-sink", sink);
+}
+
+/// Turns the DSP chain's analysis ring into visualizer frames while
+/// something is watching and audio is playing.
+fn spawn_analyzer(playbin: &gst::Element, shared: &Arc<Shared>, control: Arc<DspControl>) -> AppResult<JoinHandle<()>> {
+    let weak = playbin.downgrade();
+    let shared = shared.clone();
+    std::thread::Builder::new()
+        .name("matrixplayer-analysis".into())
+        .spawn(move || {
+            let mut analyzer = Analyzer::default();
+            while !shared.shutdown.load(Ordering::SeqCst) {
+                std::thread::sleep(ANALYSIS_INTERVAL);
+                if !control.analysis_watched() || !shared.playing.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let Some(playbin) = weak.upgrade() else { break };
+                let Some(now) = playbin.current_running_time() else { continue };
+                drop(playbin);
+                if let Some(frame) = analyzer.analyze(control.tap(), now.nseconds()) {
+                    control.publish_analysis(frame);
+                }
+            }
+        })
+        .map_err(AppError::Io)
+}
+
 fn spawn_position_ticker(
     playbin: &gst::Element,
     shared: &Arc<Shared>,
@@ -216,7 +291,7 @@ fn spawn_position_ticker(
     let weak = playbin.downgrade();
     let shared = shared.clone();
     std::thread::Builder::new()
-        .name("fermata-position".into())
+        .name("matrixplayer-position".into())
         .spawn(move || {
             while !shared.shutdown.load(Ordering::SeqCst) && !events.is_closed() {
                 std::thread::sleep(POSITION_INTERVAL);
@@ -248,7 +323,7 @@ fn translate(msg: &gst::Message, playbin: &gst::Element, shared: &Shared) -> Opt
             // The newest queued stream is the one being decoded.
             let queued = shared.starting.lock().unwrap().back().map(|(uri, _)| uri.clone());
             let uri = queued.or_else(|| shared.current_uri.lock().unwrap().clone());
-            let from_output = msg.src().is_some_and(|s| s.name().starts_with("fermata-output"));
+            let from_output = msg.src().is_some_and(|s| s.name().starts_with("matrixplayer-output"));
             let (kind, message) = classify(&err.error(), from_output);
             let detail = err.debug().map(|d| d.to_string());
             log::error!("playback error: {} ({:?})", err.error(), detail);
@@ -346,7 +421,7 @@ fn watch_caps(
 mod tests {
     use super::*;
     use crate::filesystem::path_to_uri;
-    use crate::test_support::write_flac;
+    use crate::test_support::{write_flac, write_flac_tags};
     use std::time::Instant;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -421,6 +496,74 @@ mod tests {
     }
 
     #[test]
+    fn applies_replay_gain_per_stream_across_a_gapless_join() {
+        use crate::dsp::processor::RgSource;
+        use crate::dsp::settings::DspSettings;
+
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.flac"), dir.path().join("b.flac"));
+        write_flac_tags(&a, 0.5, "title=\"A\",replaygain-album-gain=(double)-6.5,replaygain-album-peak=(double)0.2");
+        write_flac(&b, 0.5, "B");
+
+        let (tx, mut rx) = unbounded_channel();
+        let engine = AudioEngine::new(tx, output::Output::fake(false)).unwrap();
+        let dsp = engine.dsp();
+        dsp.apply(&DspSettings::default());
+        let mut status = dsp.subscribe_status();
+        engine.load(&path_to_uri(&a).unwrap(), Some(path_to_uri(&b).unwrap()), true).unwrap();
+        collect_until(&mut rx, |e| matches!(e, EngineEvent::EndOfStream));
+
+        let mut seen = Vec::new();
+        while let Ok(s) = status.try_recv() {
+            if seen.last().map(|(src, _)| *src) != Some(s.replay_gain_source) {
+                seen.push((s.replay_gain_source, (s.replay_gain_db * 10.0).round() / 10.0));
+            }
+        }
+        assert!(seen.contains(&(RgSource::Album, -6.5)), "{seen:?}");
+        assert_eq!(seen.last(), Some(&(RgSource::Untagged, -8.0)), "the untagged track gets the fallback: {seen:?}");
+    }
+
+    #[test]
+    fn publishes_analysis_frames_while_watched() {
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.flac");
+        write_flac(&a, 1.5, "A");
+
+        let (tx, mut rx) = unbounded_channel();
+        let engine = AudioEngine::new(tx, output::Output::fake(true)).unwrap();
+        let dsp = engine.dsp();
+        dsp.set_analysis(true);
+        let mut frames = dsp.subscribe_analysis();
+        engine.load(&path_to_uri(&a).unwrap(), None, true).unwrap();
+        collect_until(&mut rx, |e| matches!(e, EngineEvent::EndOfStream));
+
+        let mut loudest = None::<crate::dsp::analysis::AnalysisFrame>;
+        let mut count = 0;
+        loop {
+            let frame = match frames.try_recv() {
+                Ok(frame) => frame,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                    count += n as usize;
+                    continue;
+                }
+                Err(_) => break,
+            };
+            count += 1;
+            if loudest.as_ref().is_none_or(|l| frame.peak_db[0] > l.peak_db[0]) {
+                loudest = Some(frame);
+            }
+        }
+        assert!(count >= 10, "only {count} frames in 1.5 s");
+        let frame = loudest.unwrap();
+        // audiotestsrc volume 0.2 → −14 dBFS; its 440 Hz tone is the loudest band.
+        assert!((frame.peak_db[0] + 14.0).abs() < 1.0, "peak {}", frame.peak_db[0]);
+        let band = frame.bands.iter().enumerate().max_by(|x, y| x.1.total_cmp(y.1)).unwrap().0;
+        assert!((18..=26).contains(&band), "loudest band {band}");
+    }
+
+    #[test]
     fn seeks_while_paused() {
         gst::init().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -462,7 +605,7 @@ mod system_output_tests {
         write_flac(&b, 1.0, "B");
 
         let (tx, mut rx) = unbounded_channel();
-        let engine = AudioEngine::new(tx, output::create().unwrap()).unwrap();
+        let engine = AudioEngine::new(tx, output::create(None).unwrap()).unwrap();
         engine.set_muted(true);
         let started = Instant::now();
         engine.load(&path_to_uri(&a).unwrap(), Some(path_to_uri(&b).unwrap()), true).unwrap();

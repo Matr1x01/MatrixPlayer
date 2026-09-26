@@ -13,12 +13,13 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::artwork::{ArtworkInfo, ArtworkStore};
+use crate::artwork::{ArtworkInfo, ArtworkStore, FolderArtCache};
+use crate::audio::output::OutputDevice;
 use crate::audio::{EngineErrorKind, OutputBackend, StreamFormat};
 use crate::metadata::{self, AudioProperties, TrackMetadata};
 
 pub use queue::{EntryId, InsertMode, QueueEntry, RepeatMode};
-pub use service::{PlayerCommand, PlayerHandle, PlayerSettings};
+pub use service::{OUTPUT_DEVICE_KEY, PlayerCommand, PlayerHandle, PlayerSettings, SESSION_KEY, SavedSession};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -37,10 +38,22 @@ pub enum PlaybackStatus {
     Error,
 }
 
+/// Where a track sits in the library, for tracks that are indexed.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryRef {
+    pub track_id: i64,
+    pub album_id: Option<i64>,
+    pub artist_id: Option<i64>,
+    pub folder_id: i64,
+}
+
 /// Everything the UI shows about one track.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
+    /// The library row this track came from, if it is in the library.
+    pub library: Option<LibraryRef>,
     #[serde(skip)]
     pub path: PathBuf,
     /// The path for display. Non-UTF-8 bytes are replaced.
@@ -57,11 +70,17 @@ impl TrackInfo {
     /// Reads a file's tags, properties and artwork. Never fails: unreadable
     /// files get a minimal entry and GStreamer decides whether they play.
     pub fn load(path: &Path, artwork: &ArtworkStore) -> Self {
+        Self::load_cached(path, artwork, None)
+    }
+
+    /// [`Self::load`], sharing folder-artwork lookups through `cache`.
+    pub fn load_cached(path: &Path, artwork: &ArtworkStore, cache: Option<&FolderArtCache>) -> Self {
         let display_path = path.to_string_lossy().into_owned();
         let file_name = path.file_name().map_or_else(|| display_path.clone(), |n| n.to_string_lossy().into_owned());
         match metadata::probe(path) {
             Ok(probed) => Self {
-                artwork: artwork.resolve(path, probed.picture.as_ref()),
+                library: None,
+                artwork: artwork.resolve_cached(path, probed.picture.as_ref(), cache),
                 path: path.to_path_buf(),
                 display_path,
                 file_name,
@@ -74,7 +93,8 @@ impl TrackInfo {
                 let stem = path.file_stem().map_or_else(|| file_name.clone(), |s| s.to_string_lossy().into_owned());
                 let codec = path.extension().map_or_else(String::new, |e| e.to_string_lossy().to_ascii_uppercase());
                 Self {
-                    artwork: artwork.resolve(path, None),
+                    library: None,
+                    artwork: artwork.resolve_cached(path, None, cache),
                     path: path.to_path_buf(),
                     display_path,
                     file_name,
@@ -99,6 +119,7 @@ impl TrackInfo {
     #[cfg(test)]
     pub fn for_test(title: &str) -> Self {
         Self {
+            library: None,
             path: PathBuf::from(format!("/music/{title}.flac")),
             display_path: format!("/music/{title}.flac"),
             file_name: format!("{title}.flac"),
@@ -129,6 +150,8 @@ pub struct QueueSnapshot {
     pub current_index: Option<usize>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    /// Tracks continue into the next without a gap.
+    pub gapless: bool,
 }
 
 /// The part of the queue that changes on every track change.
@@ -138,6 +161,7 @@ pub struct QueueState {
     pub current_index: Option<usize>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    pub gapless: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,6 +179,10 @@ pub struct VolumeState {
 #[serde(rename_all = "camelCase")]
 pub struct SignalPath {
     pub backend: OutputBackend,
+    /// The chosen output device; `None` follows the system default.
+    pub device: Option<OutputDevice>,
+    /// The output's buffer, when the sink reports one.
+    pub buffer_ms: Option<u32>,
     pub decoded: Option<StreamFormat>,
     pub output: Option<StreamFormat>,
 }

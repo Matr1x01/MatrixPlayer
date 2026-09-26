@@ -13,11 +13,14 @@ const FALLBACKS: [string, string, string][] = [
   ['#2a2a2e', '#1a1a1d', '#a9a7a1'],
 ];
 
-export function artworkUrl(artwork: ArtworkInfo): string {
-  return convertFileSrc(artwork.id, 'art');
+/** Images larger than this (in CSS px) load the full-size original. */
+const THUMB_MAX_PX = 180;
+
+export function artworkUrl(id: string, thumb = false): string {
+  return convertFileSrc(thumb ? `${id}/thumb` : id, 'art');
 }
 
-function monogram(text: string): string {
+export function monogram(text: string): string {
   const letters = text
     .split(/\s+/)
     .filter((word) => /^\p{L}/u.test(word))
@@ -26,47 +29,63 @@ function monogram(text: string): string {
   return letters.join('') || '?';
 }
 
-function hash(text: string): number {
+export function fallbackColors(text: string): [string, string, string] {
   let h = 0;
   for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0;
-  return Math.abs(h);
+  return FALLBACKS[Math.abs(h) % FALLBACKS.length]!;
 }
 
 interface ArtworkProps {
-  artwork: ArtworkInfo | null | undefined;
+  /** Full artwork info (player tracks) … */
+  artwork?: ArtworkInfo | null;
+  /** … or just an id (library rows). */
+  artworkId?: string | null;
   /** Square size in px; omit to fill the parent width. */
   size?: number;
   radius?: number;
   /** Album or track name for the fallback tile. */
   title?: string;
+  /** Load the full-size image even when small (Now Playing, album hero). */
+  full?: boolean;
   className?: string;
   style?: CSSProperties;
   children?: ReactNode;
 }
 
-/** Album art, or the design's monogram tile when a track has none. */
-export function Artwork({ artwork, size, radius, title = '', className, style, children }: ArtworkProps) {
+/**
+ * Album art, or the design's monogram tile when there is none. Images fade
+ * in once decoded, so grids fill in smoothly instead of popping.
+ */
+export function Artwork({ artwork, artworkId, size, radius, title = '', full, className, style, children }: ArtworkProps) {
+  const id = artwork?.id ?? artworkId ?? null;
   const [failedId, setFailedId] = useState<string | null>(null);
+  const [loadedId, setLoadedId] = useState<string | null>(null);
   const box: CSSProperties = size ? { width: size, height: size } : { width: '100%', aspectRatio: '1 / 1' };
   const shape: CSSProperties = { ...box, borderRadius: radius, ...style };
 
-  if (artwork && failedId !== artwork.id) {
+  if (id && failedId !== id) {
+    const thumb = !full && size != null && size <= THUMB_MAX_PX;
+    // Grid tiles have no fixed size but are small: thumbnails there too.
+    const useThumb = thumb || (!full && size == null);
     return (
-      <span className={['art', className].filter(Boolean).join(' ')} style={shape}>
+      <span className={['art art-loading', loadedId === id && 'art-ready', className].filter(Boolean).join(' ')} style={shape}>
         <img
+          key={id}
           className="art-img"
-          src={artworkUrl(artwork)}
+          src={artworkUrl(id, useThumb)}
           alt=""
           decoding="async"
+          loading="lazy"
           draggable={false}
-          onError={() => setFailedId(artwork.id)}
+          onLoad={() => setLoadedId(id)}
+          onError={() => setFailedId(id)}
         />
         {children}
       </span>
     );
   }
 
-  const [from, to, fg] = FALLBACKS[hash(title) % FALLBACKS.length]!;
+  const [from, to, fg] = fallbackColors(title);
   const compact = size != null && size < 96;
   return (
     <span

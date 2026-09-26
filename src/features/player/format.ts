@@ -98,6 +98,8 @@ export function backendLabel(backend: OutputBackend): string {
       return 'ALSA';
     case 'auto':
       return 'System output';
+    case 'null':
+      return 'Silent output';
   }
 }
 

@@ -60,7 +60,7 @@ export function Transport({ scale = 'bar' }: { scale?: keyof typeof SCALES }) {
         }}
         onClick={() => void run(playerApi.toggle())}
       >
-        <Icon name={pause ? 'pause' : 'play'} filled size={s.playIcon} />
+        <Icon key={pause ? 'pause' : 'play'} name={pause ? 'pause' : 'play'} filled size={s.playIcon} className="swap" />
       </button>
       <IconButton
         icon="next"

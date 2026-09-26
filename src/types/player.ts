@@ -1,6 +1,8 @@
 // Mirrors of the Rust player types (src-tauri/src/player, audio, metadata).
 // Rust owns all of this state; the frontend only renders it.
 
+import type { OutputDevice } from './dsp';
+
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'seeking' | 'stopped' | 'error';
 export type RepeatMode = 'off' | 'all' | 'one';
 export type InsertMode = 'replace' | 'next' | 'append';
@@ -29,7 +31,7 @@ export interface TrackMetadata {
   replayGain: ReplayGain;
   tagFormat: string | null;
   tagItemCount: number;
-  /** Fields Fermata inferred rather than read from the file's tags. */
+  /** Fields MatrixPlayer inferred rather than read from the file's tags. */
   derivedFields: string[];
 }
 
@@ -55,7 +57,16 @@ export interface ArtworkInfo {
   palette: [Rgb, Rgb, Rgb];
 }
 
+export interface LibraryRef {
+  trackId: number;
+  albumId: number | null;
+  artistId: number | null;
+  folderId: number;
+}
+
 export interface TrackInfo {
+  /** Where the track sits in the library, when it is indexed. */
+  library: LibraryRef | null;
   displayPath: string;
   fileName: string;
   metadata: TrackMetadata;
@@ -67,6 +78,8 @@ export interface TrackInfo {
 export interface QueueEntry {
   id: number;
   track: TrackInfo;
+  /** Queued with "play next" / "add to queue" rather than started. */
+  added: boolean;
 }
 
 export interface QueueSnapshot {
@@ -75,6 +88,8 @@ export interface QueueSnapshot {
   currentIndex: number | null;
   shuffle: boolean;
   repeat: RepeatMode;
+  /** Tracks continue into the next without a gap. */
+  gapless: boolean;
 }
 
 export interface VolumeState {
@@ -93,10 +108,14 @@ export interface StreamFormat {
   channels: number;
 }
 
-export type OutputBackend = 'pipeWire' | 'pulseAudio' | 'alsa' | 'auto';
+export type OutputBackend = 'pipeWire' | 'pulseAudio' | 'alsa' | 'auto' | 'null';
 
 export interface SignalPath {
   backend: OutputBackend;
+  /** The chosen output device; null follows the system default. */
+  device: OutputDevice | null;
+  /** The output's buffer, when the sink reports one. */
+  bufferMs: number | null;
   decoded: StreamFormat | null;
   output: StreamFormat | null;
 }

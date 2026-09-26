@@ -6,6 +6,7 @@ import { usePlayer } from '@/stores/player';
 import { run } from '@/stores/toasts';
 import type { TrackInfo } from '@/types/player';
 
+import { LyricsPanel } from './LyricsPanel';
 import { SignalPath } from './SignalPath';
 
 export type SideTab = 'next' | 'lyrics' | 'file';
@@ -124,11 +125,7 @@ export function SidePanel({ tab, onTab, open }: SidePanelProps) {
       </div>
       <div className="flex min-h-0 flex-1 flex-col">
         {tab === 'next' && <UpNext />}
-        {tab === 'lyrics' && (
-          <div className="t3 px-6 py-6 text-[12.5px] [text-wrap:pretty]">
-            Lyrics are not available yet. Embedded and synced (.lrc) lyrics arrive with the advanced player milestone.
-          </div>
-        )}
+        {tab === 'lyrics' && <LyricsPanel />}
         {tab === 'file' && <FileInfo />}
       </div>
       <SignalPath />

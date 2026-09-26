@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.matr1x01.MatrixPlayer</id>
+  <name>MatrixPlayer</name>
+  <summary>Audio-focused music player for local collections</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.matr1x01">
+    <name>matr1x01</name>
+  </developer>
+  <url type="homepage">https://github.com/matr1x01/matrixplayer</url>
+  <url type="bugtracker">https://github.com/matr1x01/matrixplayer/issues</url>
+  <description>
+    <p>
+      MatrixPlayer plays local music collections through a native GStreamer pipeline with
+      64-bit float processing, straight into PipeWire.
+    </p>
+    <ul>
+      <li>Gapless playback, ReplayGain with clipping prevention, and soft fades</li>
+      <li>Parametric and graphic equalizer with presets, tone and stereo controls</li>
+      <li>A fast library of albums, artists, genres and folders with instant search</li>
+      <li>Playlists, favorites, listening history and a reorderable queue</li>
+      <li>Synced lyrics, spectrum and level visualizers, and a waveform seek bar</li>
+      <li>Media keys and desktop controls through MPRIS</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">MatrixPlayer.desktop</launchable>
+  <provides>
+    <binary>matrixplayer</binary>
+    <mediatype>audio/flac</mediatype>
+    <mediatype>audio/mpeg</mediatype>
+    <mediatype>audio/ogg</mediatype>
+    <mediatype>audio/opus</mediatype>
+    <mediatype>audio/mp4</mediatype>
+    <mediatype>audio/x-wav</mediatype>
+  </provides>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-09-26" />
+  </releases>
+</component>

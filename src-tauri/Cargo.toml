@@ -1,14 +1,14 @@
 [package]
-name = "fermata"
+name = "matrixplayer"
 version = "0.1.0"
-description = "Fermata — an audio-focused music player for Linux"
+description = "MatrixPlayer — an audio-focused music player for Linux"
 edition = "2024"
 rust-version = "1.92"
 license = "GPL-3.0-or-later"
 
 [lib]
 # The `_lib` suffix avoids a name clash between the lib and bin targets.
-name = "fermata_lib"
+name = "matrixplayer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -32,11 +32,18 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 blake3 = "1"
 url = "2"
 fastrand = "2"
+unicode-normalization = "0.1"
+notify = { version = "8", default-features = false }
+rustfft = "6"
 
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 tempfile = "3"
+# Peer-to-peer connections, for testing D-Bus clients against fake servers.
+zbus = { version = "5", default-features = false, features = ["tokio", "p2p"] }
 
 [profile.dev.package."*"]
 # Decoders and image code are painfully slow unoptimised; keep our crate debuggable.

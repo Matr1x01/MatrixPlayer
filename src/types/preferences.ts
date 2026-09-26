@@ -15,6 +15,8 @@ export interface UiPreferences {
   reduceMotion: boolean;
   /** Interface zoom, 0.85–1.5. */
   interfaceScale: number;
+  /** Announce new tracks with a desktop notification while in the background. */
+  trackNotifications: boolean;
 }
 
 export type UiPreferencesPatch = Partial<UiPreferences>;

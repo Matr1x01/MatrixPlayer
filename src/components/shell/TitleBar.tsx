@@ -1,37 +1,70 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useState } from 'react';
 
-import { FermataMark } from '@/components/icons/FermataMark';
+import { AppMark } from '@/components/icons/AppMark';
 import { Icon } from '@/components/icons/Icon';
 import { IconButton } from '@/components/ui/IconButton';
+import { openSearch } from '@/features/search/SearchDialog';
+import { libraryApi } from '@/services/ipc';
+import { isScanning, useLibrary } from '@/stores/library';
 import { useNavigation } from '@/stores/navigation';
+import { run } from '@/stores/toasts';
 import { usePlayer } from '@/stores/player';
 
 import { WindowControls } from './WindowControls';
 
-/**
- * Library search is part of the library milestone; until then the field is
- * shown, but inert, so the title bar keeps the design's layout.
- */
 interface SearchFieldProps {
   width: number;
   placeholder: string;
-  tip: string;
   glass?: boolean;
   shortcut?: string;
+  onOpen?: () => void;
+  tip?: string;
 }
 
-function SearchField({ width, placeholder, tip, glass, shortcut }: SearchFieldProps) {
+/** Looks like a field; opens the search dialog (the design's title-bar search). */
+function SearchField({ width, placeholder, glass, shortcut, onOpen, tip }: SearchFieldProps) {
   return (
-    <div className={glass ? 'fld tb-search glass' : 'fld tb-search'} style={{ width }} aria-disabled="true" data-tip={tip}>
+    <button
+      type="button"
+      className={glass ? 'fld tb-search glass' : 'fld tb-search'}
+      style={{ width }}
+      onClick={onOpen}
+      disabled={!onOpen}
+      data-tip={tip}
+      aria-label={placeholder}
+    >
       <Icon name="search" size={16} />
-      <span className="flex-1 el">{placeholder}</span>
+      <span className="el flex-1 text-left">{placeholder}</span>
       {shortcut && <span className="kbd">{shortcut}</span>}
-    </div>
+    </button>
   );
 }
 
-const LIBRARY_SEARCH_TIP = 'Search becomes available once your library is indexed';
+/** Rescans the library; spins while a scan runs. */
+function RescanButton() {
+  const scan = useLibrary((s) => s.scan);
+  const hasRoots = useLibrary((s) => s.roots.length > 0);
+  const scanning = isScanning(scan);
+  if (!hasRoots) return null;
+  const label = scanning
+    ? scan.phase === 'reading' && scan.total
+      ? `Indexing ${scan.processed.toLocaleString('en-US')} of ${scan.total.toLocaleString('en-US')}`
+      : 'Scanning your folders'
+    : scan.finishedAt
+      ? 'Library is up to date — rescan'
+      : 'Rescan library';
+  return (
+    <IconButton
+      icon="refresh"
+      label={label}
+      iconSize={16}
+      className={scanning ? 'spin' : undefined}
+      active={scanning}
+      onClick={() => !scanning && void run(libraryApi.rescan())}
+    />
+  );
+}
 
 function useFullscreen(): [boolean, () => void] {
   const [fullscreen, setFullscreen] = useState(false);
@@ -62,8 +95,8 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
       {variant === 'default' && (
         <>
           <div className="tb-brand" data-tauri-drag-region>
-            <FermataMark />
-            <span data-tauri-drag-region>Fermata</span>
+            <AppMark />
+            <span data-tauri-drag-region>MatrixPlayer</span>
           </div>
           <IconButton icon="chevL" label="Back" shortcut="Alt ←" onClick={back} disabled={!canGoBack} />
           <IconButton icon="chevR" label="Forward" shortcut="Alt →" onClick={forward} disabled={!canGoForward} />
@@ -72,8 +105,8 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
       {variant === 'settings' && (
         <>
           <div className="tb-brand" data-tauri-drag-region>
-            <FermataMark />
-            <span data-tauri-drag-region>Fermata</span>
+            <AppMark />
+            <span data-tauri-drag-region>MatrixPlayer</span>
           </div>
           <IconButton icon="chevL" label="Back to library" shortcut="Esc" onClick={() => (canGoBack ? back() : navigate('home'))} />
           <span className="ml-1 font-semibold" data-tauri-drag-region>
@@ -84,7 +117,7 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
       {variant === 'nowPlaying' && (
         <>
           <div className="tb-mark" data-tauri-drag-region>
-            <FermataMark />
+            <AppMark />
           </div>
           <button
             type="button"
@@ -108,10 +141,10 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
 
       <div className="tb-center" data-tauri-drag-region>
         {variant === 'default' && (
-          <SearchField width={440} placeholder="Search songs, albums, artists, folders…" tip={LIBRARY_SEARCH_TIP} shortcut="Ctrl K" />
+          <SearchField width={440} placeholder="Search songs, albums, artists, folders…" shortcut="Ctrl K" onOpen={() => openSearch()} />
         )}
         {variant === 'nowPlaying' && (
-          <SearchField width={360} placeholder="Search library…" tip={LIBRARY_SEARCH_TIP} glass shortcut="Ctrl K" />
+          <SearchField width={360} placeholder="Search library…" glass shortcut="Ctrl K" onOpen={() => openSearch()} />
         )}
         {variant === 'settings' && (
           <SearchField width={360} placeholder="Search settings" tip="Searching settings is not available yet" />
@@ -119,6 +152,7 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
       </div>
 
       <div className="flex items-center gap-1.5">
+        {variant === 'default' && <RescanButton />}
         {variant === 'nowPlaying' && (
           <>
             <IconButton icon="mini" label="Mini player (not available yet)" iconSize={16} disabled />

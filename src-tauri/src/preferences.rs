@@ -65,6 +65,9 @@ pub struct UiPreferences {
     pub reduce_motion: bool,
     /// Interface zoom, independent of the desktop scale factor.
     pub interface_scale: f64,
+    /// Announce each new track with a desktop notification (while the
+    /// window is in the background).
+    pub track_notifications: bool,
 }
 
 /// Allowed range for [`UiPreferences::interface_scale`] (Settings board).
@@ -80,6 +83,7 @@ impl Default for UiPreferences {
             sidebar_expanded: true,
             reduce_motion: false,
             interface_scale: 1.0,
+            track_notifications: true,
         }
     }
 }
@@ -96,6 +100,7 @@ pub struct UiPreferencesPatch {
     pub sidebar_expanded: Option<bool>,
     pub reduce_motion: Option<bool>,
     pub interface_scale: Option<f64>,
+    pub track_notifications: Option<bool>,
 }
 
 /// Distinguishes a field sent as `null` (`Some(None)`) from one not sent at
@@ -143,6 +148,10 @@ pub async fn update(db: &Database, patch: UiPreferencesPatch) -> AppResult<UiPre
     if let Some(reduce) = patch.reduce_motion {
         prefs.reduce_motion = reduce;
         settings::set(db, "ui.reduceMotion", &reduce).await?;
+    }
+    if let Some(on) = patch.track_notifications {
+        prefs.track_notifications = on;
+        settings::set(db, "ui.trackNotifications", &on).await?;
     }
     if let Some(scale) = patch.interface_scale {
         if !SCALE_RANGE.contains(&scale) {

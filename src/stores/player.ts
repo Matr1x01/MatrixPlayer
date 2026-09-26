@@ -23,8 +23,8 @@ export const usePlayer = create<PlayerStore>()(() => ({
   positionMs: 0,
   durationMs: null,
   volume: { level: 0.8, muted: false, gainDb: null },
-  queue: { entries: [], currentIndex: null, shuffle: false, repeat: 'off' },
-  signal: { backend: 'auto', decoded: null, output: null },
+  queue: { entries: [], currentIndex: null, shuffle: false, repeat: 'off', gapless: true },
+  signal: { backend: 'auto', device: null, bufferMs: null, decoded: null, output: null },
   error: null,
 }));
 

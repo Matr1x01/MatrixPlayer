@@ -12,15 +12,9 @@
     flex-direction: column;
     background: var(--bg1);
     position: relative;
-    animation: view-in var(--t-standard) var(--ease);
   }
   .shell-main-clear {
     background: transparent;
-  }
-  @keyframes view-in {
-    from {
-      opacity: 0;
-    }
   }
 
   /* A scrollable view with a fixed header. */

@@ -22,6 +22,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   sidebarExpanded: true,
   reduceMotion: false,
   interfaceScale: 1,
+  trackNotifications: true,
 };
 
 export const usePreferences = create<PreferencesStore>()(() => ({

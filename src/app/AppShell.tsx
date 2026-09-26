@@ -4,11 +4,14 @@ import { useEffect, useSyncExternalStore, type CSSProperties } from 'react';
 import { Sidebar } from '@/components/shell/Sidebar';
 import { SidebarRail } from '@/components/shell/SidebarRail';
 import { TitleBar } from '@/components/shell/TitleBar';
+import { ContextMenuHost } from '@/components/ui/ContextMenu';
+import { DialogHost } from '@/components/ui/Dialog';
 import { ToastHost } from '@/components/ui/ToastHost';
 import { TooltipHost } from '@/components/ui/TooltipHost';
 import { AmbientBackdrop } from '@/features/now-playing/AmbientBackdrop';
 import { PlayerBar } from '@/features/player/PlayerBar';
-import { useView } from '@/stores/navigation';
+import { SearchDialog } from '@/features/search/SearchDialog';
+import { useRoute } from '@/stores/navigation';
 import { usePreferences } from '@/stores/preferences';
 
 import { ViewOutlet } from './ViewOutlet';
@@ -34,7 +37,8 @@ function useMediaQuery(query: string): boolean {
  * section list.
  */
 export function AppShell() {
-  const view = useView();
+  const route = useRoute();
+  const view = route.view;
   const prefs = usePreferences((s) => s.prefs);
   const narrow = useMediaQuery(RAIL_QUERY);
   const nowPlaying = view === 'nowPlaying';
@@ -64,13 +68,20 @@ export function AppShell() {
       <div className="shell-body">
         {/* Settings brings its own section list in place of the library sidebar. */}
         {!settings && (rail ? <SidebarRail canExpand={!nowPlaying && !narrow} /> : <Sidebar />)}
-        <div className={nowPlaying ? 'shell-main shell-main-clear' : 'shell-main'} key={view}>
-          <ViewOutlet view={view} />
+        {/* Keyed by route so each page enters with the view transition. */}
+        <div
+          className={nowPlaying ? 'shell-main shell-main-clear' : 'shell-main'}
+          key={view === 'artists' || view === 'folders' ? view : `${view}:${route.id ?? ''}`}
+        >
+          <ViewOutlet route={route} />
         </div>
       </div>
       {/* Now Playing has its own transport; Settings has none (per the design). */}
       {!nowPlaying && !settings && <PlayerBar />}
       <ToastHost />
+      <SearchDialog />
+      <DialogHost />
+      <ContextMenuHost />
       <TooltipHost />
     </div>
   );

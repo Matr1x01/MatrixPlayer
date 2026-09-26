@@ -27,6 +27,9 @@ pub enum RepeatMode {
 pub struct QueueEntry {
     pub id: EntryId,
     pub track: Arc<TrackInfo>,
+    /// Queued with "play next" or "add to queue", rather than as part of
+    /// what was started (an album, a folder…).
+    pub added: bool,
 }
 
 /// Where newly opened tracks go.
@@ -84,7 +87,9 @@ impl Queue {
         (self.order.iter().map(|&i| self.entries[i].clone()).collect(), self.cursor)
     }
 
-    pub fn insert(&mut self, tracks: Vec<Arc<TrackInfo>>, mode: InsertMode) {
+    /// Adds `tracks`. With [`InsertMode::Replace`], `start` (an index into
+    /// `tracks`) becomes the current entry and, when shuffling, plays first.
+    pub fn insert(&mut self, tracks: Vec<Arc<TrackInfo>>, mode: InsertMode, start: usize) {
         if tracks.is_empty() {
             return;
         }
@@ -97,18 +102,22 @@ impl Queue {
         for track in tracks {
             let id = self.next_id;
             self.next_id += 1;
-            self.entries.push(QueueEntry { id, track });
+            self.entries.push(QueueEntry { id, track, added: mode != InsertMode::Replace });
         }
         let mut new: Vec<usize> = (first_new..self.entries.len()).collect();
 
         match (mode, self.cursor) {
             (InsertMode::Replace, _) => {
-                // Keep the first track first so "play these" starts where expected.
-                if self.shuffle && new.len() > 1 {
+                let start = start.min(new.len() - 1);
+                if self.shuffle {
+                    // The chosen track plays first; the rest follow in random order.
+                    new.swap(0, start);
                     fastrand::shuffle(&mut new[1..]);
+                    self.cursor = Some(0);
+                } else {
+                    self.cursor = Some(start);
                 }
                 self.order = new;
-                self.cursor = Some(0);
             }
             (InsertMode::Next, Some(cursor)) => {
                 self.order.splice(cursor + 1..cursor + 1, new);
@@ -198,6 +207,46 @@ impl Queue {
         Some(was_current)
     }
 
+    /// Moves the entries `ids` (in their current play order) so they sit
+    /// just before `before`, or at the end when `before` is `None`. The
+    /// current entry stays current.
+    pub fn move_entries(&mut self, ids: &[EntryId], before: Option<EntryId>) -> bool {
+        let current = self.cursor.map(|c| self.order[c]);
+        let (moving, mut rest): (Vec<usize>, Vec<usize>) =
+            self.order.iter().partition(|&&i| ids.contains(&self.entries[i].id));
+        if moving.is_empty() || before.is_some_and(|b| ids.contains(&b)) {
+            return false;
+        }
+        let at = match before {
+            Some(b) => match rest.iter().position(|&i| self.entries[i].id == b) {
+                Some(at) => at,
+                None => return false,
+            },
+            None => rest.len(),
+        };
+        rest.splice(at..at, moving);
+        self.order = rest;
+        self.cursor = current.and_then(|c| self.order.iter().position(|&i| i == c));
+        if !self.shuffle {
+            // Without shuffle the play order is the insertion order, so the
+            // new order becomes the stored one.
+            let entries: Vec<QueueEntry> = self.order.iter().map(|&i| self.entries[i].clone()).collect();
+            self.entries = entries;
+            self.order = (0..self.entries.len()).collect();
+        }
+        true
+    }
+
+    /// Removes every entry except the current one.
+    pub fn clear_others(&mut self) {
+        let Some(current) = self.current().cloned() else {
+            return self.clear();
+        };
+        self.entries = vec![current];
+        self.order = vec![0];
+        self.cursor = Some(0);
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
@@ -257,7 +306,7 @@ mod tests {
     #[test]
     fn replace_starts_at_first_track_and_advances_in_order() {
         let mut q = Queue::default();
-        q.insert(tracks(&["a", "b", "c"]), InsertMode::Replace);
+        q.insert(tracks(&["a", "b", "c"]), InsertMode::Replace, 0);
         assert_eq!(current(&q).as_deref(), Some("a"));
         assert_eq!(q.advance().map(|e| e.track.metadata.title.as_str()), Some("b"));
         assert_eq!(q.advance().map(|e| e.track.metadata.title.as_str()), Some("c"));
@@ -268,7 +317,7 @@ mod tests {
     #[test]
     fn repeat_modes_control_automatic_advance() {
         let mut q = Queue::default();
-        q.insert(tracks(&["a", "b"]), InsertMode::Replace);
+        q.insert(tracks(&["a", "b"]), InsertMode::Replace, 0);
         q.advance();
         assert!(q.peek_auto_next().is_none());
 
@@ -284,23 +333,23 @@ mod tests {
     #[test]
     fn insert_next_and_append() {
         let mut q = Queue::default();
-        q.insert(tracks(&["a", "b"]), InsertMode::Replace);
-        q.insert(tracks(&["z"]), InsertMode::Append);
-        q.insert(tracks(&["n"]), InsertMode::Next);
+        q.insert(tracks(&["a", "b"]), InsertMode::Replace, 0);
+        q.insert(tracks(&["z"]), InsertMode::Append, 0);
+        q.insert(tracks(&["n"]), InsertMode::Next, 0);
         assert_eq!(titles(&q), ["a", "n", "b", "z"]);
     }
 
     #[test]
     fn appending_to_an_empty_queue_selects_the_first_new_track() {
         let mut q = Queue::default();
-        q.insert(tracks(&["a", "b"]), InsertMode::Append);
+        q.insert(tracks(&["a", "b"]), InsertMode::Append, 0);
         assert_eq!(current(&q).as_deref(), Some("a"));
     }
 
     #[test]
     fn previous_steps_back_and_wraps_only_with_repeat_all() {
         let mut q = Queue::default();
-        q.insert(tracks(&["a", "b"]), InsertMode::Replace);
+        q.insert(tracks(&["a", "b"]), InsertMode::Replace, 0);
         assert!(q.retreat().is_none());
         q.set_repeat(RepeatMode::All);
         assert_eq!(q.retreat().unwrap().track.metadata.title, "b");
@@ -309,7 +358,7 @@ mod tests {
     #[test]
     fn removing_entries_keeps_the_cursor_on_the_same_track() {
         let mut q = Queue::default();
-        q.insert(tracks(&["a", "b", "c"]), InsertMode::Replace);
+        q.insert(tracks(&["a", "b", "c"]), InsertMode::Replace, 0);
         q.advance();
         let first = q.play_order().0[0].id;
         assert_eq!(q.remove(first), Some(false));
@@ -330,7 +379,7 @@ mod tests {
         let mut q = Queue::default();
         let names: Vec<String> = (0..20).map(|i| format!("t{i:02}")).collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        q.insert(tracks(&refs), InsertMode::Replace);
+        q.insert(tracks(&refs), InsertMode::Replace, 0);
         q.advance();
         q.advance();
 
@@ -348,9 +397,40 @@ mod tests {
     }
 
     #[test]
+    fn replace_can_start_anywhere_and_shuffle_plays_the_chosen_track_first() {
+        let mut q = Queue::default();
+        q.insert(tracks(&["a", "b", "c"]), InsertMode::Replace, 2);
+        assert_eq!(current(&q).as_deref(), Some("c"));
+        assert_eq!(titles(&q), ["a", "b", "c"]);
+
+        q.set_shuffle(true);
+        q.insert(tracks(&["x", "y", "z"]), InsertMode::Replace, 1);
+        assert_eq!(current(&q).as_deref(), Some("y"));
+        assert_eq!(titles(&q)[0], "y");
+    }
+
+    #[test]
+    fn moves_entries_and_keeps_the_current_one() {
+        let mut q = Queue::default();
+        q.insert(tracks(&["a", "b", "c", "d"]), InsertMode::Replace, 1);
+        let ids: Vec<EntryId> = q.play_order().0.iter().map(|e| e.id).collect();
+        assert!(q.move_entries(&[ids[3]], Some(ids[0])));
+        assert_eq!(titles(&q), ["d", "a", "b", "c"]);
+        assert_eq!(current(&q).as_deref(), Some("b"));
+        assert!(q.move_entries(&[ids[3], ids[0]], None));
+        assert_eq!(titles(&q), ["b", "c", "d", "a"]);
+        assert!(!q.move_entries(&[ids[1]], Some(ids[1])), "cannot move before itself");
+        q.set_shuffle(false);
+        assert_eq!(titles(&q), ["b", "c", "d", "a"], "the new order sticks");
+
+        q.clear_others();
+        assert_eq!(titles(&q), ["b"]);
+    }
+
+    #[test]
     fn jump_to_selects_by_entry_id() {
         let mut q = Queue::default();
-        q.insert(tracks(&["a", "b", "c"]), InsertMode::Replace);
+        q.insert(tracks(&["a", "b", "c"]), InsertMode::Replace, 0);
         let c = q.play_order().0[2].id;
         assert_eq!(q.jump_to(c).unwrap().track.metadata.title, "c");
         assert!(q.jump_to(999).is_none());

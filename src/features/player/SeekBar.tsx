@@ -8,13 +8,11 @@ import { run } from '@/stores/toasts';
 import { formatTime } from './format';
 import { isSeekable } from './hooks';
 
-interface SeekBarProps {
-  /** "bar": times either side (player bar). "split": times below (Now Playing). */
-  layout?: 'bar' | 'split';
-}
-
-/** Position readout and seek slider, driven by core position events. */
-export function SeekBar({ layout = 'bar' }: SeekBarProps) {
+/**
+ * Position readout and seek slider for the player bar, driven by core
+ * position events. Now Playing seeks over the waveform instead.
+ */
+export function SeekBar() {
   const positionMs = usePlayer((s) => s.positionMs);
   const durationMs = usePlayer((s) => s.durationMs);
   const status = usePlayer((s) => s.status);
@@ -42,18 +40,6 @@ export function SeekBar({ layout = 'bar' }: SeekBarProps) {
       }}
     />
   );
-
-  if (layout === 'split') {
-    return (
-      <div className="flex flex-col gap-2">
-        {slider}
-        <div className="mono flex justify-between text-[12px]">
-          <span>{formatTime(shownMs)}</span>
-          <span className="t3">{duration > 0 ? `−${formatTime(Math.max(0, duration - shownMs))}` : '–:––'}</span>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="flex w-full items-center gap-2.5">

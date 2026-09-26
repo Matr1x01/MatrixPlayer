@@ -5,7 +5,6 @@
 //! to it through a cloneable [`PlayerHandle`].
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,10 +15,11 @@ use super::{
     EntryId, InsertMode, PlaybackStatus, PlayerError, PlayerEvent, PlayerSnapshot, QueueSnapshot, QueueState,
     RepeatMode, SignalPath, TrackInfo, VolumeState,
 };
-use crate::artwork::ArtworkStore;
 use crate::audio::output::Output;
 use crate::audio::{AudioEngine, EngineError, EngineErrorKind, EngineEvent, EngineMessage, EngineState, StreamFormat};
 use crate::database::{Database, settings};
+use crate::dsp::DspControl;
+use crate::dsp::processor::FADE_S;
 use crate::error::{AppError, AppResult};
 use crate::filesystem;
 
@@ -27,6 +27,27 @@ use crate::filesystem;
 const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 /// How often a changed volume is written to the database.
 const PERSIST_INTERVAL: Duration = Duration::from_secs(2);
+/// The longest a soft pause waits for its fade to become audible.
+const MAX_FADE_WAIT: Duration = Duration::from_millis(900);
+
+pub const SESSION_KEY: &str = "player.session";
+
+/// The queue as saved between runs. Library tracks are found again by id;
+/// other files by path.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSession {
+    pub entries: Vec<SavedEntry>,
+    pub current: Option<usize>,
+    pub position_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedEntry {
+    pub track_id: Option<i64>,
+    pub path: String,
+}
 
 /// Persisted player preferences, restored at startup.
 #[derive(Debug, Clone)]
@@ -35,7 +56,12 @@ pub struct PlayerSettings {
     pub muted: bool,
     pub repeat: RepeatMode,
     pub shuffle: bool,
+    pub gapless: bool,
+    /// Output device id; `None` follows the system default.
+    pub output_device: Option<String>,
 }
+
+pub const OUTPUT_DEVICE_KEY: &str = "player.output_device";
 
 impl PlayerSettings {
     pub async fn load(db: &Database) -> Self {
@@ -44,6 +70,8 @@ impl PlayerSettings {
             muted: settings::get(db, "player.muted").await.ok().flatten().unwrap_or(false),
             repeat: settings::get(db, "player.repeat").await.ok().flatten().unwrap_or_default(),
             shuffle: settings::get(db, "player.shuffle").await.ok().flatten().unwrap_or(false),
+            gapless: settings::get(db, "player.gapless").await.ok().flatten().unwrap_or(true),
+            output_device: settings::get(db, OUTPUT_DEVICE_KEY).await.ok().flatten(),
         }
     }
 }
@@ -62,13 +90,40 @@ pub enum PlayerCommand {
     SetMuted(bool),
     SetRepeat(RepeatMode),
     SetShuffle(bool),
+    /// Continue into the next track without a gap (off: stop and reload).
+    SetGapless(bool),
+    /// Switches to another output; whatever was playing is reopened there.
+    SetOutput(Box<Output>),
     Insert {
         tracks: Vec<Arc<TrackInfo>>,
         mode: InsertMode,
+        /// With `Replace`: index of the track to start with.
+        start: usize,
     },
     PlayEntry(EntryId),
     RemoveEntry(EntryId),
+    /// Moves entries (in play order) before another entry, or to the end.
+    MoveEntries {
+        ids: Vec<EntryId>,
+        before: Option<EntryId>,
+    },
+    /// Keeps only the current entry.
+    ClearOthers,
+    /// Puts back a saved session: the queue, the current entry and the
+    /// position within it, paused.
+    Restore {
+        tracks: Vec<Arc<TrackInfo>>,
+        start: usize,
+        position: Duration,
+    },
     ClearQueue,
+}
+
+/// Messages the service sends itself from timers.
+#[derive(Debug)]
+enum Internal {
+    /// A soft pause's fade has reached the speakers.
+    FadedOut(u64),
 }
 
 enum Request {
@@ -82,7 +137,7 @@ enum Request {
 pub struct PlayerHandle {
     requests: mpsc::Sender<Request>,
     events: broadcast::Sender<PlayerEvent>,
-    artwork: Arc<ArtworkStore>,
+    dsp: Arc<DspControl>,
 }
 
 impl PlayerHandle {
@@ -90,20 +145,26 @@ impl PlayerHandle {
     /// service loop; the caller spawns it on its async runtime.
     pub fn new(
         db: Database,
-        artwork: Arc<ArtworkStore>,
         settings: PlayerSettings,
         output: Output,
     ) -> AppResult<(Self, impl Future<Output = ()> + Send + 'static)> {
         let (engine_tx, engine_rx) = mpsc::unbounded_channel();
         let engine = AudioEngine::new(engine_tx, output)?;
+        let dsp = engine.dsp();
         let (requests, requests_rx) = mpsc::channel(64);
         let (events, _) = broadcast::channel(512);
-        let player = Player::new(engine, db, events.clone(), settings);
-        Ok((Self { requests, events, artwork }, player.run(requests_rx, engine_rx)))
+        let (internal, internal_rx) = mpsc::unbounded_channel();
+        let player = Player::new(engine, db, events.clone(), settings, internal);
+        Ok((Self { requests, events, dsp }, player.run(requests_rx, engine_rx, internal_rx)))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PlayerEvent> {
         self.events.subscribe()
+    }
+
+    /// The processing chain inside the player's pipeline.
+    pub fn dsp(&self) -> Arc<DspControl> {
+        self.dsp.clone()
     }
 
     pub async fn command(&self, command: PlayerCommand) -> AppResult<()> {
@@ -125,27 +186,6 @@ impl PlayerHandle {
             let _ = done.await;
         }
     }
-
-    /// Reads the given files and folders off the async runtime and queues
-    /// every playable file found. Returns how many tracks were queued.
-    pub async fn open_paths(&self, paths: Vec<PathBuf>, mode: InsertMode) -> AppResult<usize> {
-        let artwork = self.artwork.clone();
-        let tracks = tokio::task::spawn_blocking(move || {
-            filesystem::collect_audio_files(&paths)
-                .iter()
-                .map(|path| Arc::new(TrackInfo::load(path, &artwork)))
-                .collect::<Vec<_>>()
-        })
-        .await
-        .map_err(|_| AppError::PlayerUnavailable)?;
-
-        if tracks.is_empty() {
-            return Err(AppError::Unsupported("no playable audio files were found".into()));
-        }
-        let count = tracks.len();
-        self.command(PlayerCommand::Insert { tracks, mode }).await?;
-        Ok(count)
-    }
 }
 
 /// What the user last asked for, as opposed to what the pipeline is doing.
@@ -158,9 +198,12 @@ enum Intent {
 
 struct Player {
     engine: AudioEngine,
+    dsp: Arc<DspControl>,
     db: Database,
     events: broadcast::Sender<PlayerEvent>,
+    internal: mpsc::UnboundedSender<Internal>,
     queue: Queue,
+    gapless: bool,
 
     engine_state: EngineState,
     intent: Intent,
@@ -175,6 +218,15 @@ struct Player {
     volume: f64,
     muted: bool,
     saved_volume: (f64, bool),
+    /// The queue or position changed since the session was last saved.
+    session_dirty: bool,
+    /// A position to seek to once a track has loaded, and whether to play
+    /// from there (a restored session stays paused).
+    pending_seek: Option<(Duration, bool)>,
+    /// The pending seek is running; play once it lands.
+    play_after_seek: bool,
+    /// Invalidates fade timers that a later command made pointless.
+    fade_token: u64,
 
     error: Option<PlayerError>,
     /// Failures since the last track that played, to stop skipping through
@@ -190,15 +242,21 @@ impl Player {
         db: Database,
         events: broadcast::Sender<PlayerEvent>,
         settings: PlayerSettings,
+        internal: mpsc::UnboundedSender<Internal>,
     ) -> Self {
         let mut queue = Queue::default();
         queue.set_repeat(settings.repeat);
         queue.set_shuffle(settings.shuffle);
+        let dsp = engine.dsp();
+        dsp.set_shuffle(settings.shuffle);
         let player = Self {
             engine,
+            dsp,
             db,
             events,
+            internal,
             queue,
+            gapless: settings.gapless,
             engine_state: EngineState::Null,
             intent: Intent::Stop,
             loading: false,
@@ -209,6 +267,10 @@ impl Player {
             volume: settings.volume.clamp(0.0, 1.0),
             muted: settings.muted,
             saved_volume: (settings.volume, settings.muted),
+            session_dirty: false,
+            pending_seek: None,
+            play_after_seek: false,
+            fade_token: 0,
             error: None,
             failures: 0,
             decoded: None,
@@ -222,6 +284,7 @@ impl Player {
         mut self,
         mut requests: mpsc::Receiver<Request>,
         mut engine_events: mpsc::UnboundedReceiver<EngineMessage>,
+        mut internal: mpsc::UnboundedReceiver<Internal>,
     ) {
         let mut persist = tokio::time::interval(PERSIST_INTERVAL);
         persist.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -240,6 +303,9 @@ impl Player {
                     }
                     Some(Request::Flush(reply)) => {
                         self.persist_volume().await;
+                        // Keep the exact position of the track being left.
+                        self.session_dirty |= self.queue.current().is_some();
+                        self.persist_session().await;
                         let _ = reply.send(());
                     }
                     None => break,
@@ -251,10 +317,15 @@ impl Player {
                         self.on_engine(message.event);
                     }
                 }
-                _ = persist.tick() => self.persist_volume().await,
+                Some(message) = internal.recv() => self.on_internal(message),
+                _ = persist.tick() => {
+                    self.persist_volume().await;
+                    self.persist_session().await;
+                }
             }
         }
         self.persist_volume().await;
+        self.persist_session().await;
     }
 
     // ── commands ────────────────────────────────────────────────────────────
@@ -264,7 +335,7 @@ impl Player {
             PlayerCommand::Play => self.play(),
             PlayerCommand::Pause => self.pause(),
             PlayerCommand::TogglePlayPause => {
-                if self.intent == Intent::Play {
+                if self.wants_play() {
                     self.pause()
                 } else {
                     self.play()
@@ -294,17 +365,45 @@ impl Player {
             }
             PlayerCommand::SetShuffle(shuffle) => {
                 self.queue.set_shuffle(shuffle);
+                self.dsp.set_shuffle(shuffle);
                 self.update_next();
                 self.emit_queue();
                 settings::set(&self.db, "player.shuffle", &shuffle).await
             }
-            PlayerCommand::Insert { tracks, mode } => self.insert(tracks, mode),
+            PlayerCommand::SetGapless(gapless) => {
+                self.gapless = gapless;
+                self.update_next();
+                self.emit_queue_state();
+                settings::set(&self.db, "player.gapless", &gapless).await
+            }
+            PlayerCommand::SetOutput(output) => self.set_output(*output),
+            PlayerCommand::Insert { tracks, mode, start } => self.insert(tracks, mode, start),
             PlayerCommand::PlayEntry(id) => {
                 self.queue.jump_to(id).ok_or_else(|| AppError::InvalidArgument("no such queue entry".into()))?;
                 self.failures = 0;
                 self.load_current(true)
             }
             PlayerCommand::RemoveEntry(id) => self.remove(id),
+            PlayerCommand::MoveEntries { ids, before } => {
+                if self.queue.move_entries(&ids, before) {
+                    self.emit_queue();
+                    self.update_next();
+                }
+                Ok(())
+            }
+            PlayerCommand::Restore { tracks, start, position } => {
+                self.queue.insert(tracks, InsertMode::Replace, start);
+                self.emit_queue();
+                self.failures = 0;
+                let seek = (position > Duration::from_secs(1)).then_some((position, false));
+                self.load_current_at(false, seek)
+            }
+            PlayerCommand::ClearOthers => {
+                self.queue.clear_others();
+                self.emit_queue();
+                self.update_next();
+                Ok(())
+            }
             PlayerCommand::ClearQueue => {
                 self.queue.clear();
                 self.engine.stop()?;
@@ -328,25 +427,116 @@ impl Player {
         if self.queue.current().is_none() {
             return Ok(());
         }
+        // A track is opening at a saved position: play once it gets there.
+        if let Some((_, play)) = &mut self.pending_seek {
+            *play = true;
+            self.refresh_status();
+            return Ok(());
+        }
+        if self.seeking && self.play_after_seek {
+            return Ok(());
+        }
         let unloaded = !self.loading && matches!(self.engine_state, EngineState::Ready | EngineState::Null);
         if self.intent == Intent::Stop || unloaded {
             self.failures = 0;
             return self.load_current(true);
         }
         self.intent = Intent::Play;
+        self.cancel_fade();
+        // After a soft pause the chain is silent: bring the sound back in.
+        self.dsp.fade(1.0, if self.soft_fades() { FADE_S } else { 0.0 });
         self.engine.play()?;
         self.refresh_status();
         Ok(())
     }
 
     fn pause(&mut self) -> AppResult<()> {
+        if let Some((_, play)) = &mut self.pending_seek {
+            *play = false;
+        }
+        self.play_after_seek = false;
         if self.intent != Intent::Play {
+            self.refresh_status();
             return Ok(());
         }
         self.intent = Intent::Pause;
-        self.engine.pause()?;
+        let audible = self.engine_state == EngineState::Playing && !self.loading && !self.seeking;
+        if self.soft_fades() && audible {
+            self.fade_out_then_pause();
+        } else {
+            self.engine.pause()?;
+        }
         self.refresh_status();
         Ok(())
+    }
+
+    /// Whether playback is, or is about to be, audible.
+    fn wants_play(&self) -> bool {
+        self.intent == Intent::Play || self.pending_seek.is_some_and(|(_, play)| play) || self.play_after_seek
+    }
+
+    fn soft_fades(&self) -> bool {
+        self.dsp.settings().soft_fades
+    }
+
+    /// Fades to silence, then pauses once the silence is what the output
+    /// plays: processing runs ahead of the speakers by the output buffer.
+    fn fade_out_then_pause(&mut self) {
+        self.fade_token += 1;
+        self.dsp.fade(0.0, FADE_S);
+        let ahead = match self.engine.running_time() {
+            Some(now) => Duration::from_nanos(self.dsp.processed_running_time().saturating_sub(now)),
+            None => Duration::ZERO,
+        };
+        let wait = (Duration::from_secs_f64(FADE_S) + ahead + Duration::from_millis(20)).min(MAX_FADE_WAIT);
+        let (token, internal) = (self.fade_token, self.internal.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            let _ = internal.send(Internal::FadedOut(token));
+        });
+    }
+
+    fn cancel_fade(&mut self) {
+        self.fade_token += 1;
+    }
+
+    fn on_internal(&mut self, message: Internal) {
+        match message {
+            Internal::FadedOut(token) if token == self.fade_token && self.intent == Intent::Pause => {
+                if let Err(e) = self.engine.pause() {
+                    log::error!("could not pause after fading out: {e}");
+                }
+                self.refresh_status();
+            }
+            Internal::FadedOut(_) => {}
+        }
+    }
+
+    /// Moves playback to another output, reopening the current track at the
+    /// same position.
+    fn set_output(&mut self, output: Output) -> AppResult<()> {
+        let active = self.queue.current().is_some() && self.intent != Intent::Stop && self.error.is_none();
+        let position = if self.loading { self.position } else { self.engine.position().unwrap_or(self.position) };
+        let play = self.intent == Intent::Play;
+        self.cancel_fade();
+        self.engine.set_output(output)?;
+        self.engine_state = EngineState::Ready;
+        self.loading = false;
+        self.seeking = false;
+        self.decoded = None;
+        self.output = None;
+        self.emit_signal();
+        if !active {
+            self.refresh_status();
+            return Ok(());
+        }
+        self.failures = 0;
+        if position > Duration::from_secs(1) {
+            // Open paused and seek first, so the start of the track is
+            // never heard on the new output.
+            return self.load_current_at(false, Some((position, play)));
+        }
+        self.load_current(play)
     }
 
     fn stop(&mut self) -> AppResult<()> {
@@ -394,9 +584,9 @@ impl Player {
         Ok(())
     }
 
-    fn insert(&mut self, tracks: Vec<Arc<TrackInfo>>, mode: InsertMode) -> AppResult<()> {
+    fn insert(&mut self, tracks: Vec<Arc<TrackInfo>>, mode: InsertMode, start: usize) -> AppResult<()> {
         let had_current = self.queue.current().is_some();
-        self.queue.insert(tracks, mode);
+        self.queue.insert(tracks, mode, start);
         self.emit_queue();
         if mode == InsertMode::Replace || !had_current {
             self.failures = 0;
@@ -447,11 +637,21 @@ impl Player {
     }
 
     fn load_current(&mut self, play: bool) -> AppResult<()> {
+        self.load_current_at(play, None)
+    }
+
+    /// Loads the current entry; with `seek`, it opens paused, seeks, and
+    /// then plays if the seek says so.
+    fn load_current_at(&mut self, play: bool, seek: Option<(Duration, bool)>) -> AppResult<()> {
+        self.pending_seek = seek;
+        self.play_after_seek = false;
         let Some(track) = self.queue.current().map(|e| e.track.clone()) else {
             return Ok(());
         };
         let uri = filesystem::path_to_uri(&track.path)?;
         self.intent = if play { Intent::Play } else { Intent::Pause };
+        self.cancel_fade();
+        self.dsp.fade(1.0, 0.0);
         self.loading = true;
         self.seeking = false;
         self.position = Duration::ZERO;
@@ -480,6 +680,9 @@ impl Player {
 
     /// The stream to continue with gaplessly after the current one.
     fn next_uri(&self) -> Option<String> {
+        if !self.gapless {
+            return None;
+        }
         self.queue.peek_auto_next().and_then(|e| filesystem::path_to_uri(&e.track.path).ok())
     }
 
@@ -509,6 +712,20 @@ impl Player {
             }
             EngineEvent::StreamStarted { uri, gapless: true } => self.on_gapless_switch(&uri),
             EngineEvent::StreamStarted { .. } => {}
+            EngineEvent::AsyncDone if self.pending_seek.is_some() && !self.loading => {
+                if let Some((position, play)) = self.pending_seek.take() {
+                    match self.seek(position) {
+                        Ok(()) => self.play_after_seek = play,
+                        Err(e) => {
+                            log::debug!("could not restore the position: {e}");
+                            if play && let Err(e) = self.play() {
+                                log::error!("could not resume: {e}");
+                            }
+                        }
+                    }
+                }
+                self.refresh_status();
+            }
             EngineEvent::AsyncDone => {
                 if self.seeking {
                     self.seeking = false;
@@ -516,6 +733,14 @@ impl Player {
                         self.position = position;
                     }
                     self.emit_position();
+                    if std::mem::take(&mut self.play_after_seek) {
+                        // Still opening, as far as the user can tell, until it plays.
+                        self.loading = true;
+                        if let Err(e) = self.play() {
+                            self.loading = false;
+                            log::error!("could not resume after seeking: {e}");
+                        }
+                    }
                 }
                 self.refresh_status();
             }
@@ -633,13 +858,14 @@ impl Player {
         match self.intent {
             Intent::Stop if self.error.is_some() => PlaybackStatus::Error,
             Intent::Stop => PlaybackStatus::Stopped,
-            _ if self.loading => PlaybackStatus::Loading,
+            _ if self.loading || self.pending_seek.is_some_and(|(_, play)| play) => PlaybackStatus::Loading,
             _ if self.seeking => PlaybackStatus::Seeking,
-            _ => match self.engine_state {
-                EngineState::Playing => PlaybackStatus::Playing,
-                EngineState::Paused => PlaybackStatus::Paused,
-                EngineState::Ready | EngineState::Null => PlaybackStatus::Loading,
-            },
+            // Once a track is loaded, the pipeline's own PLAYING ⇄ PAUSED
+            // transitions (a seek briefly prerolls, a soft pause fades out
+            // first) are not states the user should see flicker through.
+            _ if matches!(self.engine_state, EngineState::Ready | EngineState::Null) => PlaybackStatus::Loading,
+            Intent::Play => PlaybackStatus::Playing,
+            Intent::Pause => PlaybackStatus::Paused,
         }
     }
 
@@ -678,13 +904,49 @@ impl Player {
         }
     }
 
+    /// Saves the queue, the current entry and the position, so the session
+    /// can be restored after a restart.
+    async fn persist_session(&mut self) {
+        if !self.session_dirty {
+            return;
+        }
+        let (entries, current) = self.queue.play_order();
+        let session = SavedSession {
+            entries: entries
+                .iter()
+                .map(|e| SavedEntry {
+                    track_id: e.track.library.map(|l| l.track_id),
+                    path: e.track.path.to_string_lossy().into_owned(),
+                })
+                .collect(),
+            current,
+            position_ms: millis(self.position),
+        };
+        match settings::set(&self.db, SESSION_KEY, &session).await {
+            Ok(()) => self.session_dirty = false,
+            Err(e) => log::warn!("could not save the session: {e}"),
+        }
+    }
+
     fn queue_snapshot(&self) -> QueueSnapshot {
         let (entries, current_index) = self.queue.play_order();
-        QueueSnapshot { entries, current_index, shuffle: self.queue.shuffle(), repeat: self.queue.repeat() }
+        QueueSnapshot {
+            entries,
+            current_index,
+            shuffle: self.queue.shuffle(),
+            repeat: self.queue.repeat(),
+            gapless: self.gapless,
+        }
     }
 
     fn signal_path(&self) -> SignalPath {
-        SignalPath { backend: self.engine.backend(), decoded: self.decoded.clone(), output: self.output.clone() }
+        SignalPath {
+            backend: self.engine.backend(),
+            device: self.engine.device().cloned(),
+            buffer_ms: self.engine.buffer_ms(),
+            decoded: self.decoded.clone(),
+            output: self.output.clone(),
+        }
     }
 
     fn snapshot(&self) -> PlayerSnapshot {
@@ -705,21 +967,25 @@ impl Player {
         let _ = self.events.send(event);
     }
 
-    fn emit_track(&self) {
+    fn emit_track(&mut self) {
+        self.session_dirty = true;
         self.emit(PlayerEvent::Track { track: self.queue.current().map(|e| e.track.clone()) });
     }
 
     /// The whole queue: only after its contents or order changed.
-    fn emit_queue(&self) {
+    fn emit_queue(&mut self) {
+        self.session_dirty = true;
         self.emit(PlayerEvent::Queue(self.queue_snapshot()));
     }
 
     /// Cursor and modes only, which is all that changes on a track change.
-    fn emit_queue_state(&self) {
+    fn emit_queue_state(&mut self) {
+        self.session_dirty = true;
         self.emit(PlayerEvent::QueueState(QueueState {
             current_index: self.queue.current_index(),
             shuffle: self.queue.shuffle(),
             repeat: self.queue.repeat(),
+            gapless: self.gapless,
         }));
     }
 
@@ -748,12 +1014,26 @@ fn file_name_from_uri(uri: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use crate::artwork::ArtworkStore;
     use crate::test_support::write_flac;
 
     struct Harness {
         player: PlayerHandle,
         events: broadcast::Receiver<PlayerEvent>,
+        artwork: Arc<ArtworkStore>,
         dir: tempfile::TempDir,
+    }
+
+    impl Harness {
+        /// Reads the files and replaces the queue with them.
+        async fn open(&self, paths: Vec<PathBuf>) -> usize {
+            let tracks: Vec<_> = paths.iter().map(|p| Arc::new(TrackInfo::load(p, &self.artwork))).collect();
+            let count = tracks.len();
+            self.player.command(PlayerCommand::Insert { tracks, mode: InsertMode::Replace, start: 0 }).await.unwrap();
+            count
+        }
     }
 
     async fn harness() -> Harness {
@@ -761,11 +1041,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::in_memory().await.unwrap();
         let artwork = Arc::new(ArtworkStore::new(dir.path().join("art")).unwrap());
-        let settings = PlayerSettings { volume: 0.8, muted: false, repeat: RepeatMode::Off, shuffle: false };
-        let (player, service) = PlayerHandle::new(db, artwork, settings, Output::fake(true)).unwrap();
+        let settings = PlayerSettings {
+            volume: 0.8,
+            muted: false,
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            gapless: true,
+            output_device: None,
+        };
+        let (player, service) = PlayerHandle::new(db, settings, Output::fake(true)).unwrap();
         tokio::spawn(service);
         let events = player.subscribe();
-        Harness { player, events, dir }
+        Harness { player, events, artwork, dir }
     }
 
     /// Collects events up to and including the first one matching `done`.
@@ -818,7 +1105,7 @@ mod tests {
         write_flac(&a, 0.4, "First");
         write_flac(&b, 0.4, "Second");
 
-        assert_eq!(h.player.open_paths(vec![a, b], InsertMode::Replace).await.unwrap(), 2);
+        assert_eq!(h.open(vec![a, b]).await, 2);
         let events = wait_for(&mut h.events, is_status(PlaybackStatus::Stopped)).await;
 
         assert_eq!(track_titles(&events), ["First", "Second"]);
@@ -842,7 +1129,7 @@ mod tests {
         let good = h.dir.path().join("good.flac");
         write_flac(&good, 2.0, "Good");
 
-        h.player.open_paths(vec![bad, good], InsertMode::Replace).await.unwrap();
+        h.open(vec![bad, good]).await;
         let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
 
         let error = events.iter().find_map(|e| if let PlayerEvent::Error(err) = e { Some(err) } else { None });
@@ -855,7 +1142,7 @@ mod tests {
         let mut h = harness().await;
         let a = h.dir.path().join("a.flac");
         write_flac(&a, 4.0, "Long");
-        h.player.open_paths(vec![a], InsertMode::Replace).await.unwrap();
+        h.open(vec![a]).await;
         wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
 
         h.player.command(PlayerCommand::Pause).await.unwrap();
@@ -873,5 +1160,90 @@ mod tests {
         h.player.command(PlayerCommand::Seek(Duration::from_secs(60))).await.unwrap();
         let clamped = h.player.snapshot().await.unwrap();
         assert!(clamped.position_ms <= clamped.duration_ms.unwrap(), "seeks are clamped to the duration");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restores_a_session_paused_at_its_position() {
+        let mut h = harness().await;
+        let (a, b) = (h.dir.path().join("a.flac"), h.dir.path().join("b.flac"));
+        write_flac(&a, 1.0, "First");
+        write_flac(&b, 4.0, "Second");
+        let tracks = [a, b].iter().map(|p| Arc::new(TrackInfo::load(p, &h.artwork))).collect();
+        h.player
+            .command(PlayerCommand::Restore { tracks, start: 1, position: Duration::from_millis(2500) })
+            .await
+            .unwrap();
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Position { position_ms, .. } if *position_ms >= 2000))
+            .await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Paused)).await;
+
+        let snapshot = h.player.snapshot().await.unwrap();
+        assert_eq!(snapshot.track.unwrap().metadata.title, "Second");
+        assert_eq!(snapshot.queue.current_index, Some(1));
+        assert!((2400..=2600).contains(&snapshot.position_ms), "position: {}", snapshot.position_ms);
+        assert!(snapshot.queue.entries.iter().all(|e| !e.added), "a restored queue is not 'added by you'");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn seeking_while_playing_never_reports_paused() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 4.0, "Long");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        h.player.command(PlayerCommand::Seek(Duration::from_millis(2000))).await.unwrap();
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        assert_eq!(statuses(&events), [PlaybackStatus::Seeking, PlaybackStatus::Playing]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_soft_pause_really_stops_the_pipeline() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 4.0, "Long");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        h.player.command(PlayerCommand::Pause).await.unwrap();
+        wait_for(&mut h.events, is_status(PlaybackStatus::Paused)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        let first = h.player.snapshot().await.unwrap().position_ms;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(h.player.snapshot().await.unwrap().position_ms, first, "position holds once the fade is done");
+
+        h.player.command(PlayerCommand::Play).await.unwrap();
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_outputs_resumes_at_the_same_position() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 5.0, "Long");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Position { position_ms, .. } if *position_ms >= 1500))
+            .await;
+
+        h.player.command(PlayerCommand::SetOutput(Box::new(Output::fake(true)))).await.unwrap();
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        assert!(!statuses(&events).contains(&PlaybackStatus::Paused), "{:?}", statuses(&events));
+        let position = h.player.snapshot().await.unwrap().position_ms;
+        assert!(position >= 1400, "resumed at {position} ms");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn without_gapless_the_next_track_is_loaded_after_the_end() {
+        let mut h = harness().await;
+        h.player.command(PlayerCommand::SetGapless(false)).await.unwrap();
+        let (a, b) = (h.dir.path().join("a.flac"), h.dir.path().join("b.flac"));
+        write_flac(&a, 0.4, "First");
+        write_flac(&b, 0.4, "Second");
+        h.open(vec![a, b]).await;
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Stopped)).await;
+        assert_eq!(track_titles(&events), ["First", "Second"]);
+        let loads = statuses(&events).iter().filter(|s| **s == PlaybackStatus::Loading).count();
+        assert_eq!(loads, 2, "each track is opened on its own");
+        assert!(!h.player.snapshot().await.unwrap().queue.gapless);
     }
 }
