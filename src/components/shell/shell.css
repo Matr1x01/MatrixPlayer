@@ -1,0 +1,174 @@
+/* Title bar, sidebar and rail (Library — Albums and Now Playing boards). */
+
+@layer components {
+  .tb {
+    height: 44px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 10px 0 14px;
+    background: var(--bg0);
+    border-bottom: 1px solid var(--ln);
+    position: relative;
+    z-index: 1;
+  }
+  .tb-brand {
+    width: 204px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .tb-brand span {
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.01em;
+  }
+  .tb-mark {
+    width: 46px;
+    flex: none;
+    display: flex;
+    align-items: center;
+  }
+  .tb-center {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    justify-content: center;
+    align-self: stretch;
+    align-items: center;
+    padding: 0 12px;
+  }
+  .tb-search {
+    height: 30px;
+    max-width: 100%;
+    cursor: default;
+  }
+  .tb-search.glass {
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .th-light .tb-search.glass {
+    background: rgba(255, 255, 255, 0.55);
+  }
+  .wc {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--bg3) !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--tx2);
+    transition: background-color var(--t-micro) var(--ease), color var(--t-micro) var(--ease);
+  }
+  .wc:hover {
+    background: var(--bg4) !important;
+    color: var(--tx);
+  }
+  .wc-close:hover {
+    background: var(--err) !important;
+    color: #fff;
+  }
+
+  /* Sidebar */
+  .sb {
+    width: 220px;
+    flex: none;
+    background: var(--bg2);
+    border-right: 1px solid var(--ln);
+    display: flex;
+    flex-direction: column;
+    padding: 12px 8px 8px;
+    gap: 16px;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .sb-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .sb-cap {
+    padding: 0 10px 6px;
+  }
+  .nv {
+    height: 30px;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 0 10px;
+    border-radius: 6px;
+    color: var(--tx2);
+    font-weight: 500;
+    text-align: left;
+    flex: none;
+    transition: background-color var(--t-micro) var(--ease), color var(--t-micro) var(--ease);
+  }
+  .nv:hover {
+    background: var(--bg3);
+    color: var(--tx);
+  }
+  .nv.act {
+    background: var(--bg4);
+    color: var(--tx);
+  }
+  .nv.act .ic {
+    color: var(--ac);
+  }
+  .nv .ct {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--tx3);
+  }
+  .sb-foot {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .sb-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 4px 0 10px;
+    border-top: 1px solid var(--ln);
+  }
+  .sb-status .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: none;
+  }
+
+  /* Icon rail */
+  .sb.rail {
+    width: 60px;
+    align-items: center;
+    padding: 12px 0 8px;
+    gap: 10px;
+    position: relative;
+    z-index: 1;
+  }
+  .rail-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .rail-group + .rail-group {
+    border-top: 1px solid var(--ln);
+    padding-top: 10px;
+  }
+  .rail-group.mt-auto {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .rail .nv {
+    width: 40px;
+    height: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+}

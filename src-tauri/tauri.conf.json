@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Fermata",
+  "version": "0.1.0",
+  "identifier": "io.github.matr1x01.Fermata",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Fermata",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 620,
+        "center": true,
+        "decorations": false,
+        "backgroundColor": "#0A0B0C"
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self' ipc: http://ipc.localhost",
+        "img-src": "'self' art: http://art.localhost data: blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "script-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost"
+      },
+      "devCsp": {
+        "default-src": "'self' ipc: http://ipc.localhost",
+        "img-src": "'self' art: http://art.localhost data: blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "script-src": "'self' 'unsafe-inline'",
+        "connect-src": "ipc: http://ipc.localhost ws://localhost:5173 http://localhost:5173"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "Audio",
+    "shortDescription": "Audio-focused music player",
+    "longDescription": "Fermata is a music player for local collections, built on GStreamer and PipeWire.",
+    "targets": ["deb", "rpm", "appimage"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
+    "linux": {
+      "deb": { "depends": ["gstreamer1.0-plugins-good", "gstreamer1.0-plugins-base"] }
+    }
+  }
+}

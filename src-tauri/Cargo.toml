@@ -1,0 +1,43 @@
+[package]
+name = "fermata"
+version = "0.1.0"
+description = "Fermata — an audio-focused music player for Linux"
+edition = "2024"
+rust-version = "1.92"
+license = "GPL-3.0-or-later"
+
+[lib]
+# The `_lib` suffix avoids a name clash between the lib and bin targets.
+name = "fermata_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "macros", "rt-multi-thread", "time", "fs"] }
+log = "0.4"
+env_logger = "0.11"
+
+gstreamer = "0.25"
+gstreamer-audio = "0.25"
+lofty = "0.25"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+blake3 = "1"
+url = "2"
+fastrand = "2"
+
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev.package."*"]
+# Decoders and image code are painfully slow unoptimised; keep our crate debuggable.
+opt-level = 2

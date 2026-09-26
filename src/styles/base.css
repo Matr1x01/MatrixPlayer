@@ -1,0 +1,126 @@
+/* Document and app-root defaults. */
+/* Layered so component classes and Tailwind utilities override the resets. */
+@layer base {
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #0a0b0c;
+  }
+
+  body {
+    /* A desktop app: text is not selectable unless a surface opts in. */
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+  }
+
+  .app {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    font-family: 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif;
+    font-size: 13px;
+    line-height: 1.35;
+    color: var(--tx);
+    background: var(--bg1);
+    -webkit-font-smoothing: antialiased;
+    transition: background-color 0.18s ease;
+  }
+
+  .app *,
+  .app *::before,
+  .app *::after {
+    box-sizing: border-box;
+  }
+
+  .app a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .app button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+
+  .app button:disabled {
+    cursor: default;
+  }
+
+  .app h1,
+  .app h2,
+  .app h3,
+  .app p {
+    margin: 0;
+  }
+
+  .app :focus {
+    outline: none;
+  }
+
+  .app :focus-visible {
+    box-shadow: 0 0 0 2px var(--bg1), 0 0 0 4px var(--ac);
+    border-radius: 6px;
+  }
+
+  .selectable {
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+  }
+
+  /* Scrollbars (Components · B10): a 4 px thumb at rest, a wider track on hover. */
+  .app ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+    background: transparent;
+  }
+  .app ::-webkit-scrollbar-thumb {
+    background: var(--bg4);
+    border: 4px solid transparent;
+    border-left-width: 6px;
+    background-clip: padding-box;
+    border-radius: 6px;
+    min-height: 40px;
+  }
+  .app ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--ln2);
+    border-width: 2px;
+  }
+  .app ::-webkit-scrollbar-thumb:active {
+    background-color: var(--tx3);
+    border-width: 2px;
+  }
+  .app ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Reduce motion: no looping indicators, instant transitions. */
+  .reduce-motion *,
+  .reduce-motion *::before,
+  .reduce-motion *::after {
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .app *,
+    .app *::before,
+    .app *::after {
+      animation-iteration-count: 1 !important;
+      transition-duration: 0s !important;
+    }
+  }
+}

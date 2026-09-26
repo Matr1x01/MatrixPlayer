@@ -1,0 +1,196 @@
+@layer components {
+  /* ── Artwork image & fallback (Empty states · 04) ─────────────────── */
+  .art-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
+  }
+  .art::after {
+    /* Keep the hairline edge above the image. */
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+    pointer-events: none;
+  }
+  .art-fallback {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 10px;
+  }
+  .art-fallback .mg {
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+  .art-fallback .ti {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    opacity: 0.75;
+  }
+  .art-fallback.compact {
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+  }
+  .art-fallback.compact .mg {
+    letter-spacing: 0;
+  }
+
+  /* ── Slider (Components · B3) ─────────────────────────────────────── */
+  .slider {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: 16px;
+    cursor: pointer;
+    touch-action: none;
+  }
+  .slider.disabled {
+    cursor: default;
+  }
+  .slider:focus-visible {
+    border-radius: 4px;
+  }
+  .slider .bar {
+    flex: 1;
+    transition: height var(--t-micro) var(--ease), border-radius var(--t-micro) var(--ease);
+  }
+  .slider .bar > i {
+    transition: none;
+  }
+  .slider-seek .knob {
+    opacity: 0;
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+    transition: opacity var(--t-micro) var(--ease);
+  }
+  .slider-seek.hot .bar {
+    height: 6px;
+    border-radius: 3px;
+  }
+  .slider-seek.hot .bar > i {
+    border-radius: 3px;
+  }
+  .slider-seek.hot .knob,
+  .slider-seek:focus-visible .knob {
+    opacity: 1;
+  }
+  .slider-seek.disabled .bar > i {
+    background: var(--ln2);
+  }
+  .slider-volume .bar > i {
+    background: var(--tx2);
+  }
+  .slider-volume .knob {
+    width: 10px;
+    height: 10px;
+    margin: -5px 0 0 -5px;
+  }
+  .slider-volume.disabled .knob {
+    opacity: 0.4;
+  }
+  .slider-setting .knob {
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+    box-shadow: 0 0 0 3px var(--bg1);
+  }
+  .slider-mark {
+    position: absolute;
+    top: -5px;
+    bottom: -5px;
+    width: 1px;
+    background: var(--tx2);
+    pointer-events: none;
+  }
+  .slider-bubble {
+    position: absolute;
+    top: -30px;
+    transform: translateX(-50%);
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg4);
+    border: 1px solid var(--ln2);
+    font-size: 10px;
+    color: var(--tx);
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  /* ── Toasts ───────────────────────────────────────────────────────── */
+  .toast-host {
+    position: absolute;
+    left: calc(var(--sidebar-w, 220px) + 16px);
+    bottom: calc(var(--playerbar-h, 84px) + 14px);
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+  }
+  .toast-host .toast {
+    pointer-events: auto;
+    animation: toast-in var(--t-emphasized) var(--ease);
+  }
+  .toast-icon {
+    width: 28px;
+    height: 28px;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    background: var(--bg4);
+    color: var(--tx2);
+  }
+  .toast-error .toast-icon {
+    color: var(--err);
+    background: color-mix(in oklab, var(--err) 14%, transparent);
+  }
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+
+  /* ── Empty states (Empty states · 03) ─────────────────────────────── */
+  .empty-card {
+    border-radius: 8px;
+    background: var(--bg2);
+    border: 1px solid var(--ln);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .empty-card-title {
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .empty-card-body {
+    color: var(--tx2);
+    font-size: 12.5px;
+    text-wrap: pretty;
+  }
+  .empty-card-actions {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .empty-card-actions .btn {
+    justify-content: center;
+  }
+}

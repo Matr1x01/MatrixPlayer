@@ -1,0 +1,123 @@
+/* Design tokens, copied from the Fermata design (Foundations board).
+ *
+ *   bg0 frame · bg1 content · bg2 panel · bg3 raised · bg4 control
+ *   ln / ln2 lines · tx / tx2 / tx3 text · ac accent · ink text on accent
+ *   ok / warn / err semantic colours
+ *
+ * A theme class (th-*) swaps surfaces and the default accent; an accent
+ * class (ac-*) overrides only the accent. Both sit on the .app root. */
+
+.app {
+  --bg0: #0a0b0c;
+  --bg1: #101113;
+  --bg2: #15171a;
+  --bg3: #1c1e22;
+  --bg4: #262930;
+  --ln: #222428;
+  --ln2: #30333a;
+  --tx: #eceae6;
+  --tx2: #a9a7a1;
+  --tx3: #85847f;
+  --ac: #f0a43a;
+  --ink: #1a1206;
+  --ok: #5fc08a;
+  --warn: #e3b341;
+  --err: #f0625f;
+
+  /* Motion (Foundations · 05) */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-micro: 90ms;
+  --t-standard: 150ms;
+  --t-emphasized: 240ms;
+  --t-ambient: 400ms;
+
+  /* Elevation (Foundations · 03) */
+  --shadow-menu: 0 18px 44px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
+  --shadow-dialog: 0 30px 80px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+
+  /* List row height, set by the Density preference. */
+  --row-h: 32px;
+}
+
+.th-violet {
+  --bg0: #0b0a0f;
+  --bg1: #110f17;
+  --bg2: #16141e;
+  --bg3: #1e1b28;
+  --bg4: #282434;
+  --ln: #231f2d;
+  --ln2: #322d3f;
+  --ac: #a68cff;
+  --ink: #140d2b;
+}
+
+.th-cobalt {
+  --bg0: #090b0f;
+  --bg1: #0f1218;
+  --bg2: #141821;
+  --bg3: #1b202b;
+  --bg4: #242b38;
+  --ln: #1f2530;
+  --ln2: #2d3544;
+  --ac: #52a5ff;
+  --ink: #06142a;
+}
+
+.th-crimson {
+  --bg0: #0d0a0a;
+  --bg1: #141010;
+  --bg2: #1a1515;
+  --bg3: #221c1c;
+  --bg4: #2d2525;
+  --ln: #261f1f;
+  --ln2: #362d2d;
+  --ac: #ff5f64;
+  --ink: #2a0708;
+}
+
+.th-light {
+  --bg0: #d8d7d2;
+  --bg1: #f6f5f2;
+  --bg2: #ecebe7;
+  --bg3: #e2e1dc;
+  --bg4: #d5d4ce;
+  --ln: #dad9d4;
+  --ln2: #c6c5bf;
+  --tx: #16171a;
+  --tx2: #4a4a47;
+  --tx3: #686763;
+  --ac: #c2410c;
+  --ink: #ffffff;
+  --ok: #1f8a4c;
+  --warn: #9a6b00;
+  --err: #c0392b;
+  --shadow-menu: 0 18px 44px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.12);
+  --shadow-dialog: 0 30px 80px rgba(0, 0, 0, 0.22), 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.ac-amber { --ac: #f0a43a; --ink: #1a1206; }
+.ac-violet { --ac: #a68cff; --ink: #140d2b; }
+.ac-cobalt { --ac: #52a5ff; --ink: #06142a; }
+.ac-crimson { --ac: #ff5f64; --ink: #2a0708; }
+.ac-jade { --ac: #4fc48a; --ink: #05200f; }
+.ac-teal { --ac: #3cc6c6; --ink: #032222; }
+.ac-rose { --ac: #f07ab0; --ink: #2a0718; }
+.ac-mono { --ac: #e6e4de; --ink: #141414; }
+
+.th-light.ac-amber { --ac: #b45309; --ink: #fff; }
+.th-light.ac-violet { --ac: #6d4ae0; --ink: #fff; }
+.th-light.ac-cobalt { --ac: #1d64d8; --ink: #fff; }
+.th-light.ac-crimson { --ac: #c8232c; --ink: #fff; }
+.th-light.ac-jade { --ac: #15803d; --ink: #fff; }
+.th-light.ac-teal { --ac: #0e7c7b; --ink: #fff; }
+.th-light.ac-rose { --ac: #be185d; --ink: #fff; }
+.th-light.ac-mono { --ac: #1f2023; --ink: #fff; }
+
+/* Derived accents: soft (14%) marks "now playing", mid (36%) draws borders. */
+.app {
+  --acs: color-mix(in oklab, var(--ac) 14%, transparent);
+  --acm: color-mix(in oklab, var(--ac) 36%, transparent);
+}
+
+.density-standard { --row-h: 40px; }
+.density-comfortable { --row-h: 48px; }

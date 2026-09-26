@@ -1,0 +1,46 @@
+@layer components {
+  .shell-body {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    position: relative;
+  }
+  .shell-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg1);
+    position: relative;
+    animation: view-in var(--t-standard) var(--ease);
+  }
+  .shell-main-clear {
+    background: transparent;
+  }
+  @keyframes view-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  /* A scrollable view with a fixed header. */
+  .view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .view-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .page-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 22px 28px 16px;
+    flex: none;
+  }
+}
