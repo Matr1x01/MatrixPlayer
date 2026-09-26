@@ -202,9 +202,10 @@ export function DspView() {
           <div className="chain">
             {chain.map((stage, i) => (
               <Fragment key={stage.key}>
-                {i > 0 && <span className="lnk" />}
+                {i > 0 && <span className="lnk" style={{ '--i': i } as React.CSSProperties} />}
                 <button
                   type="button"
+                  style={{ '--i': i } as React.CSSProperties}
                   className={stage.state === 'off' ? 'node off' : stage.state === 'active' ? 'node act' : 'node'}
                   data-tip={`${stage.name} · ${stage.value}`}
                   onClick={() => jump(stage)}
@@ -246,9 +247,10 @@ export function DspView() {
                 detail={`${backendLabel(signal.backend)} · follows the system setting`}
                 onPick={() => void choose(null)}
               />
-              {devices?.devices.map((d) => (
+              {devices?.devices.map((d, i) => (
                 <DeviceRow
                   key={d.id}
+                  order={i + 1}
                   on={current === d.id}
                   busy={switching === d.id}
                   icon={DEVICE_ICON[d.kind]}
@@ -413,6 +415,7 @@ export function DspView() {
 }
 
 function DeviceRow({
+  order = 0,
   on,
   busy,
   icon,
@@ -420,6 +423,7 @@ function DeviceRow({
   detail,
   onPick,
 }: {
+  order?: number;
   on: boolean;
   busy: boolean;
   icon: IconName;
@@ -428,7 +432,15 @@ function DeviceRow({
   onPick: () => void;
 }) {
   return (
-    <button type="button" role="radio" aria-checked={on} className={on ? 'dev on' : 'dev'} onClick={() => !on && onPick()} disabled={busy}>
+    <button
+      type="button"
+      role="radio"
+      aria-checked={on}
+      className={on ? 'dev on' : 'dev'}
+      style={{ '--i': order } as React.CSSProperties}
+      onClick={() => !on && onPick()}
+      disabled={busy}
+    >
       <span className={on ? 'rad on' : 'rad'} />
       <Icon name={icon} size={18} style={{ color: on ? 'var(--ok)' : 'var(--tx2)' }} />
       <span className="flex min-w-0 flex-col gap-px text-left">

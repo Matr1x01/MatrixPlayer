@@ -128,6 +128,7 @@ const prefs: UiPreferences = {
   sidebarExpanded: true,
   reduceMotion: false,
   interfaceScale: 1,
+  trackNotifications: true,
 };
 
 // The Equalizer board's "Warm Headphone" curve.

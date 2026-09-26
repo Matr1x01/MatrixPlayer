@@ -1,6 +1,7 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 
 import { bandFrequency, useAnalysis } from '@/services/analysis';
+import { reducedMotion } from '@/services/motion';
 import type { EqBand, EqCurve } from '@/types/dsp';
 
 import {
@@ -43,6 +44,35 @@ function path(points: [number, number][]) {
 }
 
 const SAMPLES = Array.from({ length: 241 }, (_, i) => 20 * Math.pow(1000, i / 240));
+const MORPH_MS = 260;
+
+/**
+ * The response values to draw: they glide to new targets (a preset, a
+ * reset, a typed value), but follow the pointer exactly while dragging.
+ */
+function useMorph(target: number[], follow: boolean): number[] {
+  const [shown, setShown] = useState(target);
+  const current = useRef(target);
+  useEffect(() => {
+    if (follow || reducedMotion()) {
+      current.current = target;
+      setShown(target);
+      return;
+    }
+    const from = current.current;
+    const start = performance.now();
+    let raf = requestAnimationFrame(function step(now) {
+      const t = Math.min(1, (now - start) / MORPH_MS);
+      const e = 1 - Math.pow(1 - t, 3);
+      const next = target.map((v, i) => (from[i] ?? v) + (v - (from[i] ?? v)) * e);
+      current.current = next;
+      setShown(next);
+      if (t < 1) raf = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [target, follow]);
+  return shown;
+}
 
 const GRID_MINOR: number[] = [30, 40, 50, 60, 70, 80, 90, 200, 300, 400, 500, 600, 700, 800, 900, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000];
 const GRID_MAJOR = [20, 100, 1000, 10000, 20000];
@@ -111,8 +141,12 @@ export function ResponseGraph({
     });
   }, [curve, parametric]);
 
-  const response = useMemo(() => responseOf(curveFilters(curve)), [curve]);
-  const curvePath = useMemo(() => path(SAMPLES.map((f) => [fx(f), gy(clamp(response(f), -MAX_GAIN_DB - 2, MAX_GAIN_DB + 2))])), [response]);
+  const target = useMemo(() => {
+    const response = responseOf(curveFilters(curve));
+    return SAMPLES.map((f) => clamp(response(f), -MAX_GAIN_DB - 2, MAX_GAIN_DB + 2));
+  }, [curve]);
+  const shown = useMorph(target, drag != null);
+  const curvePath = useMemo(() => path(SAMPLES.map((f, i) => [fx(f), gy(shown[i]!)])), [shown]);
   const sel = selected != null ? nodes[selected] : undefined;
   const selPath = useMemo(() => {
     if (!sel || !parametric) return null;
@@ -193,7 +227,7 @@ export function ResponseGraph({
         <svg
           ref={svg}
           viewBox={`0 0 ${W} ${H}`}
-          className={active ? 'eq-svg' : 'eq-svg inactive'}
+          className={['eq-svg', !active && 'inactive', drag && 'dragging'].filter(Boolean).join(' ')}
           onPointerMove={onPointerMove}
           onPointerUp={() => setDrag(null)}
           onPointerCancel={() => setDrag(null)}
@@ -284,6 +318,7 @@ export function ResponseGraph({
               <g
                 key={node.index}
                 className={['eq-node', isSel && 'sel', !node.band.enabled && 'off'].filter(Boolean).join(' ')}
+                style={{ transform: `translate(${fx(node.freq)}px, ${y}px)` }}
                 role="slider"
                 tabIndex={0}
                 aria-label={label}
@@ -305,10 +340,10 @@ export function ResponseGraph({
                   else onGraphic(node.index, 0);
                 }}
               >
-                <circle cx={fx(node.freq)} cy={y} r={r + 6} fill="transparent" />
-                <circle cx={fx(node.freq)} cy={y} r={r} className="eq-dot" strokeWidth="1.6" />
+                <circle r={r + 6} fill="transparent" />
+                <circle r={r} className="eq-dot" strokeWidth="1.6" />
                 {!small && (
-                  <text x={fx(node.freq)} y={y + 3.5} textAnchor="middle" className="eq-num">
+                  <text y={3.5} textAnchor="middle" className="eq-num">
                     {node.index + 1}
                   </text>
                 )}

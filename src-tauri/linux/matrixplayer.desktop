@@ -1,0 +1,27 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+GenericName=Music Player
+Comment={{comment}}
+Exec={{exec}} %U
+Icon={{icon}}
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;audio;player;flac;playlist;equalizer;replaygain;lyrics;
+MimeType=audio/flac;audio/x-flac;audio/mpeg;audio/mp4;audio/x-m4a;audio/aac;audio/ogg;audio/x-vorbis+ogg;audio/x-opus+ogg;audio/opus;audio/wav;audio/x-wav;audio/x-aiff;audio/x-ape;audio/x-wavpack;audio/x-musepack;
+StartupNotify=true
+StartupWMClass=matrixplayer
+SingleMainWindow=true
+Actions=PlayPause;Next;Previous;
+
+[Desktop Action PlayPause]
+Name=Play/Pause
+Exec={{exec}} --play-pause
+
+[Desktop Action Next]
+Name=Next Track
+Exec={{exec}} --next
+
+[Desktop Action Previous]
+Name=Previous Track
+Exec={{exec}} --previous

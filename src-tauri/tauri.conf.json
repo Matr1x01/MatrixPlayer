@@ -44,10 +44,14 @@
   },
   "bundle": {
     "active": true,
-    "category": "Audio",
+    "category": "Music",
     "shortDescription": "Audio-focused music player",
     "longDescription": "MatrixPlayer is a music player for local collections, built on GStreamer and PipeWire.",
-    "targets": ["deb", "rpm", "appimage"],
+    "targets": [
+      "deb",
+      "rpm",
+      "appimage"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -55,7 +59,31 @@
       "icons/icon.png"
     ],
     "linux": {
-      "deb": { "depends": ["gstreamer1.0-plugins-good", "gstreamer1.0-plugins-base"] }
+      "deb": {
+        "depends": [
+          "gstreamer1.0-plugins-good",
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-pipewire"
+        ],
+        "desktopTemplate": "linux/matrixplayer.desktop",
+        "files": {
+          "/usr/share/metainfo/io.github.matr1x01.MatrixPlayer.metainfo.xml": "linux/io.github.matr1x01.MatrixPlayer.metainfo.xml"
+        }
+      },
+      "rpm": {
+        "depends": [
+          "gstreamer1-plugins-good",
+          "gstreamer1-plugins-base",
+          "pipewire-gstreamer"
+        ],
+        "desktopTemplate": "linux/matrixplayer.desktop",
+        "files": {
+          "/usr/share/metainfo/io.github.matr1x01.MatrixPlayer.metainfo.xml": "linux/io.github.matr1x01.MatrixPlayer.metainfo.xml"
+        }
+      },
+      "appimage": {
+        "bundleMediaFramework": true
+      }
     }
   }
 }

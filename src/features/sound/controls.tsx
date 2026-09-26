@@ -192,8 +192,8 @@ export function CenterSlider(props: RangeProps & { center: number; minLabel?: st
 }
 
 /** Vertical fader for graphic EQ bands, filling from 0 dB. */
-export function Fader(props: RangeProps & { caption: string; compact?: boolean }) {
-  const { value, min, max, reset, onChange, label, valueText, caption, compact, disabled } = props;
+export function Fader(props: RangeProps & { caption: string; compact?: boolean; order?: number }) {
+  const { value, min, max, reset, onChange, label, valueText, caption, compact, disabled, order } = props;
   const track = useRef<HTMLDivElement>(null);
   const wheelRef = useWheelLock<HTMLDivElement>();
   const [dragging, setDragging] = useState(false);
@@ -206,7 +206,7 @@ export function Fader(props: RangeProps & { caption: string; compact?: boolean }
   const [lo, hi] = [Math.min(pos(value), zero), Math.max(pos(value), zero)];
 
   return (
-    <div className={compact ? 'fader compact' : 'fader'}>
+    <div className={compact ? 'fader compact' : 'fader'} style={{ '--i': order } as React.CSSProperties}>
       {!compact && <span className="mono fader-value">{valueText}</span>}
       <div
         ref={wheelRef}

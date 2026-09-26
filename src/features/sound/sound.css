@@ -187,7 +187,9 @@
   .eq-svg.inactive .eq-curve { opacity: 0.35; }
   .eq-svg.inactive .eq-fill { opacity: 0.2; }
   .eq-svg.inactive .eq-node { opacity: 0.55; }
-  .eq-node { cursor: grab; outline: none; }
+  .eq-node { cursor: grab; outline: none; transition: transform 260ms var(--ease-out-soft), opacity var(--t-standard) var(--ease); }
+  .eq-svg.dragging .eq-node { transition: opacity var(--t-standard) var(--ease); }
+  .reduce-motion .eq-node { transition: none; }
   .eq-node:active { cursor: grabbing; }
   .eq-dot { fill: var(--bg2); stroke: var(--ac); transition: r var(--t-micro) var(--ease), fill var(--t-micro) var(--ease); }
   .eq-node:hover .eq-dot { fill: var(--bg4); }

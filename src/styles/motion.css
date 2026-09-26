@@ -93,6 +93,24 @@
     to { stroke-dashoffset: 0; }
   }
   .empty-card { animation: rise-in 360ms var(--ease-out-soft) both; }
+
+  /* ── Sound ─────────────────────────────────────────────────────── */
+  /* Bands, faders, chain stages and devices settle in one after another. */
+  .eq-bands > .band,
+  .eq-faders > .fader,
+  .chain > .node,
+  .dsp-col .dev,
+  .eq-presets .pr {
+    animation: rise-in 340ms var(--ease-out-soft) both;
+    animation-delay: calc(var(--i, 0) * var(--stagger));
+  }
+  .chain > .lnk { animation: fade-in 420ms var(--ease) both; animation-delay: calc(var(--i, 0) * var(--stagger)); }
+  .eq-tip { animation: pop-in 160ms var(--ease-out-soft); }
+  /* Meters glide between analysis frames instead of stepping. */
+  .meter-fill { transition: width 60ms linear; }
+  .meter-peak { transition: left 60ms linear, opacity var(--t-standard) var(--ease); }
+  .reduce-motion .meter-fill,
+  .reduce-motion .meter-peak { transition: none; }
   .scan-banner { animation: slide-down var(--t-emphasized) var(--ease-out-soft); }
 
   /* ── Artwork ───────────────────────────────────────────────────── */

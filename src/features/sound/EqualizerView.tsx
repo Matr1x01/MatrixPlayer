@@ -319,6 +319,7 @@ export function EqualizerView() {
                 <BandCard
                   key={i}
                   index={i}
+                  order={i}
                   band={band}
                   selected={i === bandSel}
                   removable={curve.parametric.length > 1}
@@ -452,11 +453,12 @@ export function EqualizerView() {
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1.5 py-2.5">
             <div className="flex flex-col gap-px">
               <div className="cap px-2.5 pb-1.5">My presets</div>
-              {mine.map((p) => (
+              {mine.map((p, i) => (
                 <div key={p.name} className="pr-row">
                   <button
                     type="button"
                     className={p.name === settings.preset ? 'pr on' : 'pr'}
+                    style={{ '--i': i } as React.CSSProperties}
                     onClick={() => loadPreset(p)}
                     onContextMenu={contextMenu(() => [
                       { label: 'Load', icon: 'check', onSelect: () => loadPreset(p) },
@@ -479,8 +481,14 @@ export function EqualizerView() {
             </div>
             <div className="flex flex-col gap-px">
               <div className="cap px-2.5 pb-1.5">Built-in</div>
-              {builtin.map((p) => (
-                <button key={p.name} type="button" className={p.name === settings.preset ? 'pr on' : 'pr'} onClick={() => loadPreset(p)}>
+              {builtin.map((p, i) => (
+                <button
+                  key={p.name}
+                  type="button"
+                  className={p.name === settings.preset ? 'pr on' : 'pr'}
+                  style={{ '--i': mine.length + i } as React.CSSProperties}
+                  onClick={() => loadPreset(p)}
+                >
                   <span className="el">{p.name}</span>
                   <span className="r">{p.name === settings.preset && modified ? 'MODIFIED' : ''}</span>
                 </button>
@@ -516,6 +524,7 @@ const KINDS: FilterKind[] = ['peak', 'lowShelf', 'highShelf', 'lowPass', 'highPa
 
 function BandCard({
   index,
+  order,
   band,
   selected,
   removable,
@@ -524,6 +533,7 @@ function BandCard({
   onRemove,
 }: {
   index: number;
+  order: number;
   band: EqBand;
   selected: boolean;
   removable: boolean;
@@ -536,6 +546,7 @@ function BandCard({
   return (
     <div
       className={['band', selected && 'sel', !band.enabled && 'off'].filter(Boolean).join(' ')}
+      style={{ '--i': order } as React.CSSProperties}
       onPointerDown={onSelect}
       onFocus={onSelect}
     >
@@ -616,6 +627,7 @@ function GraphicBands({ curve, onChange }: { curve: EqCurve; onChange: (index: n
       {freqs.map((f, i) => (
         <Fader
           key={f}
+          order={i}
           compact={!wide}
           label={`${formatFreq(f)} band`}
           caption={caption(f)}

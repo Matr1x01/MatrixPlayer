@@ -10,6 +10,7 @@ mod artwork;
 mod audio;
 mod commands;
 mod database;
+mod desktop;
 mod dsp;
 mod error;
 mod events;
@@ -37,7 +38,7 @@ use crate::player::{InsertMode, PlayerHandle, PlayerSettings};
 use crate::state::AppState;
 
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn")).init();
 
     if let Err(err) = gstreamer::init() {
         eprintln!("MatrixPlayer needs GStreamer 1.x and could not initialise it: {err}");
@@ -46,6 +47,11 @@ pub fn run() {
     log::info!("{}", gstreamer::version_string());
 
     tauri::Builder::default()
+        // Must come first: a second launch hands its arguments (files to
+        // play, desktop-entry actions) to the running instance and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            handle_invocation(app, desktop::parse_args(argv.into_iter().skip(1)));
+        }))
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("art", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
@@ -187,13 +193,37 @@ fn setup(app: &AppHandle) -> Result<(), error::AppError> {
 
     app.manage(artwork.clone());
     let waveforms = Arc::new(WaveformCache::new(cache_dir.join("waveforms"))?);
+    desktop::mpris::spawn(app.clone(), player.clone(), artwork.clone());
+    desktop::notifications::spawn(app.clone(), player.clone(), artwork.clone(), db.clone());
     app.manage(AppState { player, library, artwork, dsp, waveforms, db });
 
-    let cli_files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
-    if !cli_files.is_empty() {
-        queue_paths(app, cli_files, InsertMode::Replace);
+    // Files on the command line play; transport flags only matter to an
+    // instance that is already running.
+    if let desktop::Invocation::Open(files) = desktop::parse_args(std::env::args().skip(1)) {
+        queue_paths(app, files, InsertMode::Replace);
     }
     Ok(())
+}
+
+/// Acts on the arguments of a second launch.
+fn handle_invocation(app: &AppHandle, invocation: desktop::Invocation) {
+    match invocation {
+        desktop::Invocation::Command(command) => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(state) = app.try_state::<AppState>()
+                    && let Err(e) = state.player.command(command).await
+                {
+                    log::debug!("desktop action failed: {e}");
+                }
+            });
+        }
+        desktop::Invocation::Open(files) => {
+            queue_paths(app, files, InsertMode::Replace);
+            desktop::show_main_window(app);
+        }
+        desktop::Invocation::Show => desktop::show_main_window(app),
+    }
 }
 
 /// Queues files from outside the UI (drag and drop, command line) and tells

@@ -225,8 +225,6 @@ struct Player {
     pending_seek: Option<(Duration, bool)>,
     /// The pending seek is running; play once it lands.
     play_after_seek: bool,
-    /// A soft pause is fading out; the pipeline pauses when it is silent.
-    fading: bool,
     /// Invalidates fade timers that a later command made pointless.
     fade_token: u64,
 
@@ -272,7 +270,6 @@ impl Player {
             session_dirty: false,
             pending_seek: None,
             play_after_seek: false,
-            fading: false,
             fade_token: 0,
             error: None,
             failures: 0,
@@ -486,7 +483,6 @@ impl Player {
     /// plays: processing runs ahead of the speakers by the output buffer.
     fn fade_out_then_pause(&mut self) {
         self.fade_token += 1;
-        self.fading = true;
         self.dsp.fade(0.0, FADE_S);
         let ahead = match self.engine.running_time() {
             Some(now) => Duration::from_nanos(self.dsp.processed_running_time().saturating_sub(now)),
@@ -502,13 +498,11 @@ impl Player {
 
     fn cancel_fade(&mut self) {
         self.fade_token += 1;
-        self.fading = false;
     }
 
     fn on_internal(&mut self, message: Internal) {
         match message {
             Internal::FadedOut(token) if token == self.fade_token && self.intent == Intent::Pause => {
-                self.fading = false;
                 if let Err(e) = self.engine.pause() {
                     log::error!("could not pause after fading out: {e}");
                 }
@@ -866,13 +860,12 @@ impl Player {
             Intent::Stop => PlaybackStatus::Stopped,
             _ if self.loading || self.pending_seek.is_some_and(|(_, play)| play) => PlaybackStatus::Loading,
             _ if self.seeking => PlaybackStatus::Seeking,
-            // Still audible for a moment, but paused as far as the user is concerned.
-            Intent::Pause if self.fading => PlaybackStatus::Paused,
-            _ => match self.engine_state {
-                EngineState::Playing => PlaybackStatus::Playing,
-                EngineState::Paused => PlaybackStatus::Paused,
-                EngineState::Ready | EngineState::Null => PlaybackStatus::Loading,
-            },
+            // Once a track is loaded, the pipeline's own PLAYING ⇄ PAUSED
+            // transitions (a seek briefly prerolls, a soft pause fades out
+            // first) are not states the user should see flicker through.
+            _ if matches!(self.engine_state, EngineState::Ready | EngineState::Null) => PlaybackStatus::Loading,
+            Intent::Play => PlaybackStatus::Playing,
+            Intent::Pause => PlaybackStatus::Paused,
         }
     }
 
@@ -1189,6 +1182,19 @@ mod tests {
         assert_eq!(snapshot.queue.current_index, Some(1));
         assert!((2400..=2600).contains(&snapshot.position_ms), "position: {}", snapshot.position_ms);
         assert!(snapshot.queue.entries.iter().all(|e| !e.added), "a restored queue is not 'added by you'");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn seeking_while_playing_never_reports_paused() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 4.0, "Long");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        h.player.command(PlayerCommand::Seek(Duration::from_millis(2000))).await.unwrap();
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        assert_eq!(statuses(&events), [PlaybackStatus::Seeking, PlaybackStatus::Playing]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
