@@ -1,6 +1,8 @@
 // Mirrors of the Rust player types (src-tauri/src/player, audio, metadata).
 // Rust owns all of this state; the frontend only renders it.
 
+import type { OutputDevice } from './dsp';
+
 export type PlaybackStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'seeking' | 'stopped' | 'error';
 export type RepeatMode = 'off' | 'all' | 'one';
 export type InsertMode = 'replace' | 'next' | 'append';
@@ -86,6 +88,8 @@ export interface QueueSnapshot {
   currentIndex: number | null;
   shuffle: boolean;
   repeat: RepeatMode;
+  /** Tracks continue into the next without a gap. */
+  gapless: boolean;
 }
 
 export interface VolumeState {
@@ -108,6 +112,10 @@ export type OutputBackend = 'pipeWire' | 'pulseAudio' | 'alsa' | 'auto' | 'null'
 
 export interface SignalPath {
   backend: OutputBackend;
+  /** The chosen output device; null follows the system default. */
+  device: OutputDevice | null;
+  /** The output's buffer, when the sink reports one. */
+  bufferMs: number | null;
   decoded: StreamFormat | null;
   output: StreamFormat | null;
 }

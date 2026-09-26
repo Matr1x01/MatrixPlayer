@@ -25,6 +25,7 @@ import type {
   TrackQuery,
   TrackRow,
 } from '@/types/library';
+import type { DspSettings, DspState, Lyrics, OutputDevices } from '@/types/dsp';
 import type { InsertMode, PlayerSnapshot, RepeatMode } from '@/types/player';
 import type { AppInfo, UiPreferences, UiPreferencesPatch } from '@/types/preferences';
 
@@ -41,6 +42,33 @@ export const playerApi = {
   setMuted: (muted: boolean) => invoke<void>('player_set_muted', { muted }),
   setRepeat: (mode: RepeatMode) => invoke<void>('player_set_repeat', { mode }),
   setShuffle: (enabled: boolean) => invoke<void>('player_set_shuffle', { enabled }),
+  setGapless: (enabled: boolean) => invoke<void>('player_set_gapless', { enabled }),
+  /** Lyrics of the current track (sidecar .lrc or tags), or null. */
+  lyrics: () => invoke<Lyrics | null>('player_lyrics'),
+  /** Peak levels (0–255) of the current track in `points` columns. */
+  waveform: (points: number) => invoke<number[] | null>('player_waveform', { points }),
+};
+
+export const dspApi = {
+  state: () => invoke<DspState>('dsp_state'),
+  /** Applies settings immediately; resolves to them as applied (clamped). */
+  update: (settings: DspSettings) => invoke<DspSettings>('dsp_update', { settings }),
+  /** Resets processing to defaults, keeping the equalizer. */
+  restoreDefaults: () => invoke<DspSettings>('dsp_restore_defaults'),
+  savePreset: (name: string) => invoke<DspState>('dsp_save_preset', { name }),
+  deletePreset: (name: string) => invoke<DspState>('dsp_delete_preset', { name }),
+  /** Native save dialog; resolves to the number exported, or null if cancelled. */
+  exportPresets: () => invoke<number | null>('dsp_export_presets'),
+  /** Native open dialog; resolves to the number imported, or null if cancelled. */
+  importPresets: () => invoke<number | null>('dsp_import_presets'),
+  /** Starts or stops the `audio-analysis` event stream. */
+  setAnalysis: (enabled: boolean) => invoke<void>('dsp_set_analysis', { enabled }),
+};
+
+export const outputApi = {
+  devices: () => invoke<OutputDevices>('audio_output_devices'),
+  /** null follows the system default. */
+  setDevice: (id: string | null) => invoke<void>('player_set_output_device', { id }),
 };
 
 export const queueApi = {

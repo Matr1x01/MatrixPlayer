@@ -8,6 +8,7 @@ import type { ArtistKind, TrackSort } from '@/types/library';
 
 export type AlbumSort = 'artist' | 'title' | 'year' | 'added' | 'played';
 export type AlbumFilter = 'all' | 'hires' | 'lossless' | 'lossy' | 'recent' | 'unplayed';
+export type VisualizerMode = 'spectrum' | 'waveform' | 'frequency' | 'meters' | 'artwork';
 
 export interface ViewPrefs {
   albumSort: AlbumSort;
@@ -18,6 +19,7 @@ export interface ViewPrefs {
   songHiRes: boolean;
   artistKind: ArtistKind;
   folderShowFiles: boolean;
+  visualizer: VisualizerMode;
 }
 
 const DEFAULTS: ViewPrefs = {
@@ -29,6 +31,7 @@ const DEFAULTS: ViewPrefs = {
   songHiRes: false,
   artistKind: 'albumArtists',
   folderShowFiles: false,
+  visualizer: 'spectrum',
 };
 
 const KEY = 'matrixplayer.viewPrefs';

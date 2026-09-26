@@ -6,9 +6,12 @@ import { EmptyCard } from '@/components/ui/EmptyState';
 import { IconButton } from '@/components/ui/IconButton';
 import { openFiles, openFolder } from '@/features/library/openActions';
 import { OutputButton } from '@/features/player/OutputButton';
-import { SeekBar } from '@/features/player/SeekBar';
+import { openMenu } from '@/components/ui/ContextMenu';
+import { playlistSubmenu } from '@/features/library/trackMenu';
+import { FavoriteButton } from '@/features/player/PlayerBar';
 import { Transport } from '@/features/player/Transport';
 import { VolumeControl } from '@/features/player/VolumeControl';
+import { useDsp } from '@/stores/dsp';
 import { useNavigation } from '@/stores/navigation';
 import { usePlayer } from '@/stores/player';
 import type { TrackInfo } from '@/types/player';
@@ -16,6 +19,7 @@ import type { TrackInfo } from '@/types/player';
 import { SidePanel, type SideTab } from './SidePanel';
 import { TrackChips } from './TrackChips';
 import { Visualizer } from './Visualizer';
+import { WaveformSeek } from './WaveformSeek';
 
 function context(track: TrackInfo, position: number | null, total: number): string {
   const { album, year, trackNumber, trackTotal } = track.metadata;
@@ -44,14 +48,32 @@ function TrackHeader({ track, onTab }: { track: TrackInfo; onTab: (tab: SideTab)
         <span className="el text-[18px] font-medium t2">{track.metadata.artist ?? 'Unknown artist'}</span>
       </div>
       <div className="-ml-1.5 flex items-center gap-1">
-        <IconButton icon="heart" label="Favorites arrive with the library" disabled />
-        <IconButton icon="playlist" label="Playlists arrive with the library" disabled />
+        <FavoriteButton iconSize={18} />
+        <IconButton
+          icon="playlist"
+          label={track.library ? 'Add to playlist' : 'Only tracks in your library can go in playlists'}
+          disabled={!track.library}
+          onClick={(e) => track.library && openMenu(e.currentTarget, playlistSubmenu([track.library.trackId]), { label: 'Add to playlist' })}
+        />
         <IconButton icon="lyrics" label="Show lyrics" onClick={() => onTab('lyrics')} />
         <IconButton icon="info" label="File information" onClick={() => onTab('file')} />
       </div>
       <TrackChips track={track} />
       <Visualizer track={track} />
     </div>
+  );
+}
+
+/** Equalizer state, e.g. "Warm Headphone"; opens the Equalizer. */
+function EqButton({ onOpen }: { onOpen: () => void }) {
+  const settings = useDsp((s) => s.settings);
+  const on = !!settings?.eqEnabled && !settings.bypass;
+  const label = !settings?.eqEnabled ? 'Equalizer off' : settings.bypass ? 'EQ bypassed' : (settings.preset ?? 'Custom EQ');
+  return (
+    <button type="button" className="btn glass" onClick={onOpen} data-tip="Equalizer">
+      <Icon name="eq" size={15} style={{ color: on ? 'var(--ac)' : 'var(--tx3)' }} />
+      <span className="btn-label el max-w-[160px]">{label}</span>
+    </button>
   );
 }
 
@@ -100,16 +122,13 @@ export function NowPlayingView() {
           <TrackHeader track={track} onTab={showTab} />
         </div>
 
-        <SeekBar layout="split" />
+        <WaveformSeek />
 
         <div className="np-controls">
           <VolumeControl width={150} showDb iconSize={18} />
           <Transport scale="large" />
           <div className="flex items-center justify-end gap-1.5">
-            <button type="button" className="btn glass" onClick={() => navigate('equalizer')} data-tip="Equalizer">
-              <Icon name="eq" size={15} style={{ color: 'var(--tx3)' }} />
-              <span className="btn-label">Equalizer off</span>
-            </button>
+            <EqButton onOpen={() => navigate('equalizer')} />
             <OutputButton framed />
           </div>
         </div>

@@ -6,6 +6,7 @@ import { IconButton } from '@/components/ui/IconButton';
 import { count, formatSizeShort } from '@/features/library/format';
 import { isScanning, useLibrary } from '@/stores/library';
 import { PARENT_VIEW, useNavigation, useRoute, type ViewId } from '@/stores/navigation';
+import { useDsp } from '@/stores/dsp';
 import { usePlayer } from '@/stores/player';
 import { updatePreferences } from '@/stores/preferences';
 
@@ -15,7 +16,9 @@ import { NAV_GROUPS } from './navItems';
 function useCounts(): Partial<Record<ViewId, string>> {
   const queueLength = usePlayer((s) => s.queue.entries.length);
   const stats = useLibrary((s) => s.stats);
+  const eqOn = useDsp((s) => !!s.settings?.eqEnabled && !s.settings.bypass);
   const counts: Partial<Record<ViewId, string>> = {};
+  if (eqOn) counts.equalizer = 'ON';
   if (queueLength > 0) counts.queue = count(queueLength);
   if (stats && stats.tracks > 0) {
     counts.artists = count(stats.albumArtists);

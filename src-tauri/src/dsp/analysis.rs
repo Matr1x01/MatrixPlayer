@@ -30,8 +30,8 @@ pub struct AnalysisFrame {
     /// Peak and RMS level per channel (L, R) in dBFS.
     pub peak_db: [f32; 2],
     pub rms_db: [f32; 2],
-    /// A short stretch of the waveform (mono, −1 … 1).
-    pub scope: Vec<f32>,
+    /// A short stretch of the waveform per channel (L, R; −1 … 1).
+    pub scope: [Vec<f32>; 2],
 }
 
 #[derive(Default)]
@@ -183,12 +183,8 @@ impl Analyzer {
         // A two-cycle-ish stretch of waveform for the oscilloscope.
         let span = ((rate / 40) as usize).min(frames.len());
         let tail = &frames[frames.len() - span..];
-        let scope = (0..SCOPE_POINTS)
-            .map(|i| {
-                let f = tail[i * span / SCOPE_POINTS];
-                (f[0] + f[1]) * 0.5
-            })
-            .collect();
+        let channel = |c: usize| (0..SCOPE_POINTS).map(|i| tail[i * span / SCOPE_POINTS][c]).collect();
+        let scope = [channel(0), channel(1)];
 
         AnalysisFrame {
             bands,
@@ -227,7 +223,8 @@ mod tests {
         assert!((frame.peak_db[0] + 6.02).abs() < 0.2, "L peak {}", frame.peak_db[0]);
         assert!((frame.peak_db[1] + 12.04).abs() < 0.2, "R peak {}", frame.peak_db[1]);
         assert!((frame.rms_db[0] + 9.03).abs() < 0.3, "L rms {}", frame.rms_db[0]);
-        assert_eq!(frame.scope.len(), SCOPE_POINTS);
+        assert_eq!(frame.scope[0].len(), SCOPE_POINTS);
+        assert!(frame.scope[1].iter().all(|v| v.abs() <= 0.26), "R is the quieter channel");
     }
 
     #[test]

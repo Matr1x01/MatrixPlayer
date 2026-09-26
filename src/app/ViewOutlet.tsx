@@ -8,7 +8,8 @@ import { SongsView } from '@/features/library/SongsView';
 import { NowPlayingView } from '@/features/now-playing/NowPlayingView';
 import { QueueView } from '@/features/queue/QueueView';
 import { SettingsView } from '@/features/settings/SettingsView';
-import { DspView, EqualizerView } from '@/features/sound/SoundViews';
+import { DspView } from '@/features/sound/DspView';
+import { EqualizerView } from '@/features/sound/EqualizerView';
 import type { Route } from '@/stores/navigation';
 
 export function ViewOutlet({ route }: { route: Route }) {

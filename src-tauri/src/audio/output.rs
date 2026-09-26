@@ -296,6 +296,19 @@ fn describe_stream(sink: &gst::Element) {
 mod tests {
     use super::*;
 
+    /// Opt in with `cargo test -- --ignored` on a machine running PipeWire.
+    #[test]
+    #[ignore = "needs a running PipeWire daemon"]
+    fn lists_and_opens_pipewire_devices() {
+        gst::init().unwrap();
+        let devices = devices(OutputBackend::PipeWire);
+        eprintln!("{devices:#?}");
+        let first = devices.first().expect("PipeWire lists at least one sink");
+        let (sink, found) = open_device(OutputBackend::PipeWire, &first.id).expect("the listed device opens");
+        assert_eq!(&found, first);
+        assert_eq!(sink.factory().unwrap().name(), "pipewiresink");
+    }
+
     #[test]
     fn reads_limits_from_device_caps() {
         gst::init().unwrap();
