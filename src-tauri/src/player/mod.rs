@@ -14,11 +14,12 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::artwork::{ArtworkInfo, ArtworkStore, FolderArtCache};
+use crate::audio::output::OutputDevice;
 use crate::audio::{EngineErrorKind, OutputBackend, StreamFormat};
 use crate::metadata::{self, AudioProperties, TrackMetadata};
 
 pub use queue::{EntryId, InsertMode, QueueEntry, RepeatMode};
-pub use service::{PlayerCommand, PlayerHandle, PlayerSettings, SESSION_KEY, SavedSession};
+pub use service::{OUTPUT_DEVICE_KEY, PlayerCommand, PlayerHandle, PlayerSettings, SESSION_KEY, SavedSession};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -149,6 +150,8 @@ pub struct QueueSnapshot {
     pub current_index: Option<usize>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    /// Tracks continue into the next without a gap.
+    pub gapless: bool,
 }
 
 /// The part of the queue that changes on every track change.
@@ -158,6 +161,7 @@ pub struct QueueState {
     pub current_index: Option<usize>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    pub gapless: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,6 +179,10 @@ pub struct VolumeState {
 #[serde(rename_all = "camelCase")]
 pub struct SignalPath {
     pub backend: OutputBackend,
+    /// The chosen output device; `None` follows the system default.
+    pub device: Option<OutputDevice>,
+    /// The output's buffer, when the sink reports one.
+    pub buffer_ms: Option<u32>,
     pub decoded: Option<StreamFormat>,
     pub output: Option<StreamFormat>,
 }

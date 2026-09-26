@@ -24,6 +24,10 @@ pub const PLAYER_RESYNC: &str = "player-resync";
 pub const TRACKS_QUEUED: &str = "tracks-queued";
 pub const LIBRARY_SCAN: &str = "library-scan";
 pub const LIBRARY_CHANGED: &str = "library-changed";
+/// What the processing chain is doing (ReplayGain source, limiter).
+pub const DSP_STATUS: &str = "dsp-status";
+/// Visualizer frames, ~30 per second while enabled with `dsp_set_analysis`.
+pub const AUDIO_ANALYSIS: &str = "audio-analysis";
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +93,31 @@ pub fn forward_library_events(app: AppHandle, mut events: broadcast::Receiver<Li
                 Ok(LibraryEvent::Changed(what)) => emit(&app, LIBRARY_CHANGED, what),
                 // Missed changes: have the UI refetch everything.
                 Err(RecvError::Lagged(_)) => emit(&app, LIBRARY_CHANGED, crate::library::LibraryChange::Tracks),
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+pub fn forward_dsp_events(app: AppHandle, dsp: &crate::dsp::DspControl) {
+    let mut status = dsp.subscribe_status();
+    let status_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match status.recv().await {
+                Ok(s) => emit(&status_app, DSP_STATUS, s),
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+    let mut frames = dsp.subscribe_analysis();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match frames.recv().await {
+                Ok(frame) => emit(&app, AUDIO_ANALYSIS, frame),
+                // Old frames are worthless; carry on with the newest.
+                Err(RecvError::Lagged(_)) => {}
                 Err(RecvError::Closed) => break,
             }
         }

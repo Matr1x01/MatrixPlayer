@@ -17,6 +17,8 @@ use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
 
+pub mod lyrics;
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackMetadata {

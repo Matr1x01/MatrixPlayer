@@ -29,7 +29,9 @@ use tauri::{AppHandle, DragDropEvent, Manager, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use crate::artwork::ArtworkStore;
+use crate::audio::waveform::WaveformCache;
 use crate::database::Database;
+use crate::dsp::service::DspService;
 use crate::library::LibraryHandle;
 use crate::player::{InsertMode, PlayerHandle, PlayerSettings};
 use crate::state::AppState;
@@ -86,6 +88,8 @@ pub fn run() {
             commands::player::player_set_muted,
             commands::player::player_set_repeat,
             commands::player::player_set_shuffle,
+            commands::player::player_lyrics,
+            commands::player::player_waveform,
             commands::queue::queue_play_entry,
             commands::queue::queue_remove_entry,
             commands::queue::queue_clear,
@@ -130,6 +134,17 @@ pub fn run() {
             commands::library::playlist_add,
             commands::library::playlist_remove,
             commands::library::playlist_move,
+            commands::dsp::dsp_state,
+            commands::dsp::dsp_update,
+            commands::dsp::dsp_restore_defaults,
+            commands::dsp::dsp_save_preset,
+            commands::dsp::dsp_delete_preset,
+            commands::dsp::dsp_export_presets,
+            commands::dsp::dsp_import_presets,
+            commands::dsp::dsp_set_analysis,
+            commands::dsp::audio_output_devices,
+            commands::dsp::player_set_output_device,
+            commands::dsp::player_set_gapless,
             commands::system::get_app_info,
             commands::system::get_ui_preferences,
             commands::system::update_ui_preferences,
@@ -141,7 +156,10 @@ pub fn run() {
                 && let Some(state) = app.try_state::<AppState>()
             {
                 state.library.shutdown();
-                tauri::async_runtime::block_on(state.player.flush());
+                tauri::async_runtime::block_on(async {
+                    state.player.flush().await;
+                    state.dsp.flush().await;
+                });
             }
         });
 }
@@ -155,10 +173,12 @@ fn setup(app: &AppHandle) -> Result<(), error::AppError> {
     let artwork = Arc::new(ArtworkStore::new(cache_dir.join("artwork"))?);
     let settings = tauri::async_runtime::block_on(PlayerSettings::load(&db));
 
-    let output = audio::output::create()?;
+    let output = audio::output::create(settings.output_device.as_deref())?;
     let (player, service) = PlayerHandle::new(db.clone(), settings, output)?;
+    let dsp = tauri::async_runtime::block_on(DspService::start(db.clone(), player.dsp()));
     tauri::async_runtime::spawn(service);
     events::forward_player_events(app.clone(), player.subscribe());
+    events::forward_dsp_events(app.clone(), dsp.control());
 
     let (library, library_task) = LibraryHandle::new(db.clone(), artwork.clone());
     tauri::async_runtime::spawn(library_task);
@@ -166,7 +186,8 @@ fn setup(app: &AppHandle) -> Result<(), error::AppError> {
     library::listening::spawn(library.clone(), player.subscribe());
 
     app.manage(artwork.clone());
-    app.manage(AppState { player, library, artwork, db });
+    let waveforms = Arc::new(WaveformCache::new(cache_dir.join("waveforms"))?);
+    app.manage(AppState { player, library, artwork, dsp, waveforms, db });
 
     let cli_files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
     if !cli_files.is_empty() {

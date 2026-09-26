@@ -5,6 +5,7 @@ use std::time::Duration;
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
+use crate::metadata::lyrics::{self, Lyrics};
 use crate::player::{PlayerCommand, PlayerSnapshot, RepeatMode};
 use crate::state::AppState;
 
@@ -73,4 +74,25 @@ pub async fn player_set_repeat(state: State<'_, AppState>, mode: RepeatMode) -> 
 #[tauri::command]
 pub async fn player_set_shuffle(state: State<'_, AppState>, enabled: bool) -> AppResult<()> {
     state.player.command(PlayerCommand::SetShuffle(enabled)).await
+}
+
+/// Lyrics of the current track: its `.lrc` file, or lyrics in its tags.
+#[tauri::command]
+pub async fn player_lyrics(state: State<'_, AppState>) -> AppResult<Option<Lyrics>> {
+    let Some(track) = state.player.snapshot().await?.track else { return Ok(None) };
+    tauri::async_runtime::spawn_blocking(move || lyrics::load(&track.path))
+        .await
+        .map_err(|e| AppError::Metadata(e.to_string()))
+}
+
+/// Peak levels (0–255) of the current track in `points` columns, for the
+/// waveform seek bar. The first request for a track decodes it.
+#[tauri::command]
+pub async fn player_waveform(state: State<'_, AppState>, points: usize) -> AppResult<Option<Vec<u8>>> {
+    let Some(track) = state.player.snapshot().await?.track else { return Ok(None) };
+    let cache = state.waveforms.clone();
+    tauri::async_runtime::spawn_blocking(move || cache.get(&track.path, points))
+        .await
+        .map_err(|e| AppError::Audio(e.to_string()))?
+        .map(Some)
 }

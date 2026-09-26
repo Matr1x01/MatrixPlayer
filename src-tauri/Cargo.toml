@@ -34,6 +34,7 @@ url = "2"
 fastrand = "2"
 unicode-normalization = "0.1"
 notify = { version = "8", default-features = false }
+rustfft = "6"
 
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 

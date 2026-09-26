@@ -3,6 +3,7 @@
 //! Commands validate their arguments and delegate to services; they hold no
 //! logic of their own.
 
+pub mod dsp;
 pub mod library;
 pub mod player;
 pub mod queue;

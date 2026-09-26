@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::artwork::ArtworkStore;
+use crate::audio::waveform::WaveformCache;
 use crate::database::Database;
+use crate::dsp::service::DspService;
 use crate::error::AppResult;
 use crate::library::LibraryHandle;
 use crate::player::{InsertMode, PlayerCommand, PlayerHandle};
@@ -13,6 +15,8 @@ pub struct AppState {
     pub player: PlayerHandle,
     pub library: LibraryHandle,
     pub artwork: Arc<ArtworkStore>,
+    pub dsp: Arc<DspService>,
+    pub waveforms: Arc<WaveformCache>,
     pub db: Database,
 }
 
