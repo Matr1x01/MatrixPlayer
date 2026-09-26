@@ -1,12 +1,13 @@
 import { Icon } from '@/components/icons/Icon';
-import { useNavigation, useView } from '@/stores/navigation';
+import { PARENT_VIEW, useNavigation, useView } from '@/stores/navigation';
 import { updatePreferences } from '@/stores/preferences';
 
 import { NAV_GROUPS } from './navItems';
 
 /** The 60 px icon rail used by Now Playing and collapsed layouts. */
 export function SidebarRail({ canExpand }: { canExpand: boolean }) {
-  const view = useView();
+  const current = useView();
+  const view = PARENT_VIEW[current] ?? current;
   const navigate = useNavigation((s) => s.navigate);
 
   return (

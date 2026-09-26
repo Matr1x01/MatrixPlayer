@@ -1,5 +1,6 @@
 import { IconButton } from '@/components/ui/IconButton';
 import { Artwork } from '@/components/ui/Artwork';
+import { setFavorite, useIsFavorite } from '@/stores/library';
 import { useNavigation, useView } from '@/stores/navigation';
 import { usePlayer } from '@/stores/player';
 
@@ -19,7 +20,7 @@ function CurrentTrack() {
         <Artwork artwork={null} size={56} />
         <div className="flex min-w-0 flex-col gap-[3px]">
           <span className="el text-[14px] font-semibold">Nothing playing</span>
-          <span className="el t3 text-[12px]">Open files with Ctrl+O, or drop them on the window</span>
+          <span className="el t3 text-[12px]">Pick something from your library, or drop files on the window</span>
         </div>
       </div>
     );
@@ -42,8 +43,30 @@ function CurrentTrack() {
           {properties.bitrateKbps != null && <span className="chip">{formatKbps(properties.bitrateKbps)}</span>}
         </div>
       </div>
-      <IconButton icon="heart" label="Favorites arrive with the library" iconSize={17} disabled />
+      <FavoriteButton />
     </div>
+  );
+}
+
+/** The heart for the current track; only library tracks can be favorites. */
+export function FavoriteButton({ size, iconSize = 17 }: { size?: number; iconSize?: number }) {
+  const trackId = usePlayer((s) => s.track?.library?.trackId ?? null);
+  const favorite = useIsFavorite(trackId);
+  if (trackId == null) {
+    return <IconButton icon="heart" label="Only tracks in your library can be favorites" iconSize={iconSize} size={size} disabled />;
+  }
+  return (
+    <IconButton
+      icon="heart"
+      label={favorite ? 'Remove from favorites' : 'Add to favorites'}
+      shortcut="L"
+      iconSize={iconSize}
+      size={size}
+      active={favorite}
+      filled={favorite}
+      className="heart-btn"
+      onClick={() => void setFavorite([trackId], !favorite)}
+    />
   );
 }
 

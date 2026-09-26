@@ -3,6 +3,28 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
+import type {
+  AlbumDetail,
+  AlbumRow,
+  ArtistDetail,
+  ArtistKind,
+  ArtistRow,
+  DefaultRoot,
+  FolderDetail,
+  FolderNode,
+  GenreDetail,
+  GenreRow,
+  HistoryEntry,
+  LibraryStats,
+  PlaylistRow,
+  PlaySource,
+  RootInfo,
+  ScanStatus,
+  SearchResults,
+  TrackList,
+  TrackQuery,
+  TrackRow,
+} from '@/types/library';
 import type { InsertMode, PlayerSnapshot, RepeatMode } from '@/types/player';
 import type { AppInfo, UiPreferences, UiPreferencesPatch } from '@/types/preferences';
 
@@ -25,6 +47,9 @@ export const queueApi = {
   playEntry: (id: number) => invoke<void>('queue_play_entry', { id }),
   removeEntry: (id: number) => invoke<void>('queue_remove_entry', { id }),
   clear: () => invoke<void>('queue_clear'),
+  clearOthers: () => invoke<void>('queue_clear_others'),
+  /** Moves entries before `before`, or to the end when it is null. */
+  move: (ids: number[], before: number | null) => invoke<void>('queue_move', { ids, before }),
   /** Opens the native file dialog; resolves to the number of tracks queued. */
   openFiles: (mode: InsertMode) => invoke<number>('open_audio_files', { mode }),
   /** Opens the native folder dialog; resolves to the number of tracks queued. */
@@ -35,4 +60,48 @@ export const systemApi = {
   appInfo: () => invoke<AppInfo>('get_app_info'),
   preferences: () => invoke<UiPreferences>('get_ui_preferences'),
   updatePreferences: (patch: UiPreferencesPatch) => invoke<UiPreferences>('update_ui_preferences', { patch }),
+};
+
+export const libraryApi = {
+  stats: () => invoke<LibraryStats>('library_stats'),
+  scanStatus: () => invoke<ScanStatus>('library_scan_status'),
+  roots: () => invoke<RootInfo[]>('library_roots'),
+  /** Opens the native folder dialog; resolves to the new root's id, or null. */
+  addRoot: () => invoke<number | null>('library_add_root'),
+  addDefaultRoot: () => invoke<number>('library_add_default_root'),
+  defaultRoot: () => invoke<DefaultRoot | null>('library_default_root'),
+  removeRoot: (id: number) => invoke<void>('library_remove_root', { id }),
+  /** `full` re-reads the tags of unchanged files too. */
+  rescan: (root?: number, full = false) => invoke<void>('library_rescan', { root: root ?? null, full }),
+  albums: () => invoke<AlbumRow[]>('library_albums'),
+  album: (id: number) => invoke<AlbumDetail>('library_album', { id }),
+  artists: (kind: ArtistKind) => invoke<ArtistRow[]>('library_artists', { kind }),
+  artist: (id: number) => invoke<ArtistDetail>('library_artist', { id }),
+  genres: () => invoke<GenreRow[]>('library_genres'),
+  genre: (id: number) => invoke<GenreDetail>('library_genre', { id }),
+  folderChildren: (id: number) => invoke<FolderNode[]>('library_folder_children', { id }),
+  folder: (id: number) => invoke<FolderDetail>('library_folder', { id }),
+  trackList: (query: TrackQuery) => invoke<TrackList>('library_track_list', { query }),
+  tracks: (ids: number[]) => invoke<TrackRow[]>('library_tracks', { ids }),
+  search: (text: string, limit?: number) => invoke<SearchResults>('library_search', { text, limit: limit ?? null }),
+  play: (source: PlaySource, mode: InsertMode, start?: number, shuffle?: boolean) =>
+    invoke<number>('library_play', { source, mode, start: start ?? null, shuffle: shuffle ?? null }),
+  setFavorite: (ids: number[], favorite: boolean) => invoke<void>('library_set_favorite', { ids, favorite }),
+  favoriteIds: () => invoke<number[]>('library_favorite_ids'),
+  history: (limit?: number) => invoke<HistoryEntry[]>('library_history', { limit: limit ?? null }),
+  clearHistory: () => invoke<void>('library_clear_history'),
+  revealFolder: (id: number) => invoke<void>('library_reveal_folder', { id }),
+  trackFolder: (id: number) => invoke<number>('library_track_folder', { id }),
+};
+
+export const playlistApi = {
+  list: () => invoke<PlaylistRow[]>('playlists_list'),
+  get: (id: number) => invoke<PlaylistRow>('playlist_get', { id }),
+  create: (name: string, tracks?: number[]) => invoke<number>('playlist_create', { name, tracks: tracks ?? null }),
+  rename: (id: number, name: string) => invoke<void>('playlist_rename', { id, name }),
+  setPinned: (id: number, pinned: boolean) => invoke<void>('playlist_set_pinned', { id, pinned }),
+  remove: (id: number) => invoke<void>('playlist_delete', { id }),
+  add: (id: number, tracks: number[]) => invoke<number>('playlist_add', { id, tracks }),
+  removeEntries: (id: number, positions: number[]) => invoke<void>('playlist_remove', { id, positions }),
+  move: (id: number, positions: number[], to: number) => invoke<void>('playlist_move', { id, positions, to }),
 };

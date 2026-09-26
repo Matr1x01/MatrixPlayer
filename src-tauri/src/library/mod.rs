@@ -31,13 +31,17 @@ use self::paths::{path_bytes, path_from_bytes};
 use self::query::TrackQuery;
 use self::scan::{ScanContext, ScanRoot, validate_new_root};
 use crate::artwork::ArtworkStore;
-use crate::database::Database;
+use crate::database::{Database, settings};
 use crate::error::{AppError, AppResult};
 use crate::filesystem;
 use crate::player::TrackInfo;
 
 /// Quiet time after the last file-system change before a rescan starts.
 const WATCH_DEBOUNCE: Duration = Duration::from_secs(3);
+/// Bumped whenever tag or artwork reading improves, so that the next start
+/// re-reads every file once instead of only new and changed ones.
+const SCANNER_VERSION: i64 = 2;
+const SCANNER_VERSION_KEY: &str = "library.scanner_version";
 
 /// What changed, so the UI refetches only what it shows.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -68,7 +72,8 @@ pub enum PlaySource {
 }
 
 enum Request {
-    Scan(Option<Vec<i64>>),
+    /// Rescan these roots (or all); `full` re-reads unchanged files too.
+    Scan(Option<Vec<i64>>, bool),
     AddRoot(PathBuf, oneshot::Sender<AppResult<i64>>),
     RemoveRoot(i64, oneshot::Sender<AppResult<()>>),
 }
@@ -114,9 +119,10 @@ impl LibraryHandle {
         self.status.lock().unwrap().clone()
     }
 
-    /// Rescans one root, or all of them.
-    pub fn rescan(&self, root: Option<i64>) {
-        let _ = self.requests.send(Request::Scan(root.map(|r| vec![r])));
+    /// Rescans one root, or all of them. A `full` rescan re-reads the tags
+    /// of every file, not just new and changed ones.
+    pub fn rescan(&self, root: Option<i64>, full: bool) {
+        let _ = self.requests.send(Request::Scan(root.map(|r| vec![r]), full));
     }
 
     /// Adds `path` as a library folder and starts indexing it.
@@ -231,6 +237,11 @@ impl Worker {
         // the app was closed" pass.
         let mut pending: Option<BTreeSet<i64>> = Some(BTreeSet::new());
         let mut all = true;
+        let stored: Option<i64> = settings::get(&self.handle.db, SCANNER_VERSION_KEY).await.ok().flatten();
+        let mut full = stored.is_some_and(|v| v < SCANNER_VERSION);
+        if full {
+            log::info!("tag reading has improved since the last scan; re-reading every file once");
+        }
         self.restart_watcher().await;
         loop {
             // Handle everything already queued before (re)starting a scan.
@@ -248,11 +259,15 @@ impl Worker {
             };
             if let Some(request) = request {
                 match request {
-                    Request::Scan(None) => {
+                    Request::Scan(None, force) => {
                         all = true;
+                        full |= force;
                         pending.get_or_insert_default();
                     }
-                    Request::Scan(Some(ids)) => pending.get_or_insert_default().extend(ids),
+                    Request::Scan(Some(ids), force) => {
+                        full |= force;
+                        pending.get_or_insert_default().extend(ids);
+                    }
                     Request::AddRoot(path, reply) => {
                         let result = self.add_root(&path).await;
                         if let Ok(id) = result {
@@ -271,16 +286,23 @@ impl Worker {
             }
             let Some(targets) = pending.take() else { continue };
             let only = if all { None } else { Some(targets) };
+            let everything = only.is_none();
             all = false;
-            if let Some(unfinished) = self.scan(only).await {
-                pending = Some(unfinished);
+            match self.scan(only, full).await {
+                Some(unfinished) => pending = Some(unfinished),
+                None => {
+                    if everything {
+                        let _ = settings::set(&self.handle.db, SCANNER_VERSION_KEY, &SCANNER_VERSION).await;
+                    }
+                    full = false;
+                }
             }
         }
     }
 
     /// Scans the given roots (or all). Returns the roots left unscanned when
     /// the scan was interrupted.
-    async fn scan(&mut self, only: Option<BTreeSet<i64>>) -> Option<BTreeSet<i64>> {
+    async fn scan(&mut self, only: Option<BTreeSet<i64>>, full: bool) -> Option<BTreeSet<i64>> {
         let h = &self.handle;
         h.cancel.store(false, Ordering::SeqCst);
         let roots = match load_roots(&h.db).await {
@@ -311,8 +333,14 @@ impl Worker {
                 let _ = events.send(LibraryEvent::Changed(LibraryChange::Tracks));
             }
         };
-        let ctx =
-            ScanContext { db: &h.db, artwork: &self.artwork, cancel: &h.cancel, report: &report, publish: &publish };
+        let ctx = ScanContext {
+            db: &h.db,
+            artwork: &self.artwork,
+            cancel: &h.cancel,
+            report: &report,
+            publish: &publish,
+            full,
+        };
         let mut unfinished = BTreeSet::new();
         let mut interrupted = false;
         for root in &roots {
@@ -473,7 +501,8 @@ async fn debounce_changes(
             }
             Some(None) => {
                 log::debug!("library files changed; rescanning {dirty:?}");
-                let _ = handle.requests.send(Request::Scan(Some(std::mem::take(&mut dirty).into_iter().collect())));
+                let _ =
+                    handle.requests.send(Request::Scan(Some(std::mem::take(&mut dirty).into_iter().collect()), false));
             }
         }
     }
@@ -653,7 +682,7 @@ mod tests {
         let lfw_dir = music.join("Halden Reach/Low Frequency Weather");
         std::fs::rename(lfw_dir.join("02 Isobar.flac"), lfw_dir.join("02 - Isobar (remaster).flac")).unwrap();
         std::fs::remove_file(music.join("Sigur Rós/Takk/01 Glósóli.flac")).unwrap();
-        lib.library.rescan(Some(root));
+        lib.library.rescan(Some(root), false);
         lib.scanned().await;
 
         let favorites = lib.titles(TrackScope::Favorites, "").await;
@@ -678,7 +707,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tracks.len(), 3);
-        assert_eq!(tracks[1].library_id, Some(isobar));
+        assert_eq!(tracks[1].library.map(|l| l.track_id), Some(isobar));
+        assert_eq!(tracks[1].library.and_then(|l| l.album_id), Some(lfw.id));
         assert_eq!(tracks[1].metadata.album_artist.as_deref(), Some("Halden Reach"));
         assert!(tracks[1].path.ends_with("02 - Isobar (remaster).flac"));
 
@@ -701,7 +731,7 @@ mod tests {
 
         let unplugged = lib.dir.path().join("unplugged");
         std::fs::rename(&music, &unplugged).unwrap();
-        lib.library.rescan(Some(root));
+        lib.library.rescan(Some(root), false);
         lib.scanned().await;
         let db = lib.library.db().clone();
         let stats = query::stats(&db).await.unwrap();
@@ -709,7 +739,7 @@ mod tests {
         assert!(lib.library.status().offline.iter().any(|r| r.ends_with("Music")));
 
         std::fs::rename(&unplugged, &music).unwrap();
-        lib.library.rescan(Some(root));
+        lib.library.rescan(Some(root), false);
         lib.scanned().await;
         assert_eq!(query::stats(&db).await.unwrap().unavailable, 0);
     }

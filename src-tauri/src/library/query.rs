@@ -18,11 +18,12 @@ use crate::artwork::{ArtworkInfo, ArtworkSource};
 use crate::database::Database;
 use crate::error::{AppError, AppResult};
 use crate::metadata::{AudioProperties, ReplayGain, TrackMetadata};
-use crate::player::TrackInfo;
+use crate::player::{LibraryRef, TrackInfo};
 
 /// Columns of [`TrackRow`], for `SELECT … FROM tracks t`.
 const TRACK_COLUMNS: &str = "t.id, t.title, t.artist, t.artist_id, t.album, t.album_id, t.album_artist, t.genre,
-    t.year, t.track_number, t.disc_number, t.codec, t.lossless, t.sample_rate, t.bit_depth, t.channels,
+    t.year, t.track_number, t.disc_number,
+    CASE WHEN t.codec = 'PCM' THEN t.container ELSE t.codec END AS codec, t.lossless, t.sample_rate, t.bit_depth, t.channels,
     t.bitrate_kbps, t.duration_ms, t.file_size, t.file_name, t.folder_id, t.artwork_id,
     t.favorite_at IS NOT NULL AS favorite, t.play_count, t.last_played_at, t.added_at, t.available,
     instr(t.derived_fields, '\"title\"') > 0 AS title_derived, t.probe_error IS NOT NULL AS unreadable";
@@ -562,7 +563,8 @@ async fn common_folder(db: &Database, folders: &[FolderRef]) -> AppResult<Option
 async fn format_shares(db: &Database, where_clause: &str, id: i64) -> AppResult<Vec<FormatShare>> {
     type Share = (String, bool, Option<i64>, Option<i64>, i64);
     let rows: Vec<Share> = sqlx::query_as(&format!(
-        "SELECT t.codec, t.lossless, CASE WHEN t.lossless THEN t.bit_depth END AS depth,
+        "SELECT CASE WHEN t.codec = 'PCM' THEN t.container ELSE t.codec END, t.lossless,
+            CASE WHEN t.lossless THEN t.bit_depth END AS depth,
             CASE WHEN t.lossless THEN NULL ELSE (t.bitrate_kbps + 16) / 32 * 32 END AS rate, COUNT(*) AS n
          FROM tracks t {where_clause} GROUP BY 1, 2, 3, 4 ORDER BY n DESC"
     ))
@@ -1087,6 +1089,9 @@ pub async fn tracks_by_ids(db: &Database, ids: &[i64]) -> AppResult<Vec<TrackRow
 #[derive(sqlx::FromRow)]
 struct FullTrack {
     id: i64,
+    album_id: Option<i64>,
+    artist_id: Option<i64>,
+    folder_id: i64,
     path: Vec<u8>,
     display_path: String,
     file_name: String,
@@ -1135,7 +1140,12 @@ impl FullTrack {
         let narrow = |v: Option<i64>| v.and_then(|v| u32::try_from(v).ok());
         let derived: Vec<String> = serde_json::from_str(&self.derived_fields).unwrap_or_default();
         TrackInfo {
-            library_id: Some(self.id),
+            library: Some(LibraryRef {
+                track_id: self.id,
+                album_id: self.album_id,
+                artist_id: self.artist_id,
+                folder_id: self.folder_id,
+            }),
             path: path_from_bytes(&self.path),
             display_path: self.display_path,
             file_name: self.file_name,
@@ -1192,7 +1202,8 @@ pub async fn track_infos(db: &Database, ids: &[i64]) -> AppResult<Vec<Arc<TrackI
     for chunk in ids.chunks(500) {
         let list = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
         let rows: Vec<FullTrack> = sqlx::query_as(&format!(
-            "SELECT t.id, t.path, t.display_path, t.file_name, t.file_size, t.title, t.artist, t.album,
+            "SELECT t.id, t.album_id, t.artist_id, t.folder_id, t.path, t.display_path, t.file_name, t.file_size,
+                t.title, t.artist, t.album,
                 t.album_artist, t.genre, t.composer, t.year, t.track_number, t.track_total, t.disc_number,
                 t.disc_total, t.comment, t.copyright, t.tag_format, t.tag_item_count, t.derived_fields,
                 t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak, t.codec, t.container,

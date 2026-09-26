@@ -15,10 +15,11 @@ pub fn unavailable() -> Response<Vec<u8>> {
 ///
 /// Ids are content hashes, so responses are immutable and cached forever.
 pub fn respond(store: &ArtworkStore, uri_path: &str) -> Response<Vec<u8>> {
-    let path = uri_path.trim_start_matches('/');
+    // `convertFileSrc` percent-encodes the slash in "<id>/thumb".
+    let path = uri_path.trim_start_matches('/').replace("%2F", "/").replace("%2f", "/");
     let file = match path.strip_suffix("/thumb") {
         Some(id) => store.thumbnail_for(id),
-        None => store.file_for(path),
+        None => store.file_for(&path),
     };
     let Some(bytes) = file.and_then(|p| std::fs::read(p).ok()) else {
         return Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new()).unwrap();

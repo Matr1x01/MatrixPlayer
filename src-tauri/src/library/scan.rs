@@ -85,6 +85,8 @@ pub struct ScanContext<'a> {
     pub report: &'a (dyn Fn(&ScanStatus) + Send + Sync),
     /// Called when enough new data was written to be worth showing.
     pub publish: &'a (dyn Fn() + Send + Sync),
+    /// Re-read files even when their size and mtime are unchanged.
+    pub full: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -164,7 +166,7 @@ pub async fn scan_root(ctx: &ScanContext<'_>, root: &ScanRoot, status: &mut Scan
     let mut reavailable = Vec::new();
     for file in found.files {
         match existing.remove(&file.path) {
-            Some(row) if row.size == file.size as i64 && row.mtime == file.mtime => {
+            Some(row) if !ctx.full && row.size == file.size as i64 && row.mtime == file.mtime => {
                 if !row.available {
                     reavailable.push(row.id);
                 }

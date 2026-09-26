@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 
 import { useGlobalShortcuts } from '@/hooks/useGlobalShortcuts';
 import { onCoreEvent } from '@/services/events';
+import { connectLibrary } from '@/stores/library';
 import { connectPlayer } from '@/stores/player';
 import { loadPreferences, usePreferences } from '@/stores/preferences';
 import { errorMessage, showToast } from '@/stores/toasts';
@@ -23,6 +24,9 @@ export function App() {
     connectPlayer()
       .then(keep)
       .catch((err) => showToast({ tone: 'error', message: `Could not reach the audio engine: ${errorMessage(err)}` }));
+    connectLibrary()
+      .then(keep)
+      .catch((err) => showToast({ tone: 'error', message: `Could not open the library: ${errorMessage(err)}` }));
     void onCoreEvent('audio-error', (err) =>
       showToast({ tone: 'error', message: err.message, detail: err.fileName ?? undefined }),
     ).then(keep);

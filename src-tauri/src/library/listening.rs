@@ -39,7 +39,7 @@ impl Listening {
                 self.session = track.as_ref().and_then(|t| {
                     let duration = t.properties.duration_ms;
                     Some(Session {
-                        track_id: t.library_id?,
+                        track_id: t.library?.track_id,
                         threshold_ms: (duration / 2).clamp(1, MAX_THRESHOLD_MS),
                         listened_ms: 0,
                         last_position: 0,
@@ -110,7 +110,7 @@ mod tests {
 
     fn track(id: i64, duration_ms: u64) -> PlayerEvent {
         let mut info = TrackInfo::for_test("t");
-        info.library_id = Some(id);
+        info.library = Some(crate::player::LibraryRef { track_id: id, album_id: None, artist_id: None, folder_id: 1 });
         info.properties.duration_ms = duration_ms;
         PlayerEvent::Track { track: Some(Arc::new(info)) }
     }

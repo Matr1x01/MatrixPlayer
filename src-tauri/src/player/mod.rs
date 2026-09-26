@@ -37,12 +37,22 @@ pub enum PlaybackStatus {
     Error,
 }
 
+/// Where a track sits in the library, for tracks that are indexed.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryRef {
+    pub track_id: i64,
+    pub album_id: Option<i64>,
+    pub artist_id: Option<i64>,
+    pub folder_id: i64,
+}
+
 /// Everything the UI shows about one track.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
     /// The library row this track came from, if it is in the library.
-    pub library_id: Option<i64>,
+    pub library: Option<LibraryRef>,
     #[serde(skip)]
     pub path: PathBuf,
     /// The path for display. Non-UTF-8 bytes are replaced.
@@ -68,7 +78,7 @@ impl TrackInfo {
         let file_name = path.file_name().map_or_else(|| display_path.clone(), |n| n.to_string_lossy().into_owned());
         match metadata::probe(path) {
             Ok(probed) => Self {
-                library_id: None,
+                library: None,
                 artwork: artwork.resolve_cached(path, probed.picture.as_ref(), cache),
                 path: path.to_path_buf(),
                 display_path,
@@ -82,7 +92,7 @@ impl TrackInfo {
                 let stem = path.file_stem().map_or_else(|| file_name.clone(), |s| s.to_string_lossy().into_owned());
                 let codec = path.extension().map_or_else(String::new, |e| e.to_string_lossy().to_ascii_uppercase());
                 Self {
-                    library_id: None,
+                    library: None,
                     artwork: artwork.resolve_cached(path, None, cache),
                     path: path.to_path_buf(),
                     display_path,
@@ -108,7 +118,7 @@ impl TrackInfo {
     #[cfg(test)]
     pub fn for_test(title: &str) -> Self {
         Self {
-            library_id: None,
+            library: None,
             path: PathBuf::from(format!("/music/{title}.flac")),
             display_path: format!("/music/{title}.flac"),
             file_name: format!("{title}.flac"),

@@ -96,7 +96,7 @@ export function NowPlayingView() {
     <div className="np">
       <main className="np-main">
         <div className="np-top">
-          <Artwork artwork={track.artwork} title={track.metadata.album ?? track.metadata.title} className="np-art" />
+          <Artwork artwork={track.artwork} full title={track.metadata.album ?? track.metadata.title} className="np-art" />
           <TrackHeader track={track} onTab={showTab} />
         </div>
 

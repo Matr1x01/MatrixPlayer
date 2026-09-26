@@ -1,0 +1,186 @@
+/* Motion: how things enter, respond and settle.
+ *
+ * Principles: movement is short (90–400 ms), eases out, and travels a few
+ * pixels at most — it explains what changed without slowing anyone down.
+ * Lists stagger in by index (--i). Everything here is switched off by the
+ * Reduce motion setting and by the system's reduced-motion preference. */
+
+@layer components {
+  .app {
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+    --stagger: 22ms;
+  }
+
+  @keyframes rise-in {
+    from { opacity: 0; transform: translateY(8px); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+  }
+  @keyframes pop-in {
+    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+  }
+  @keyframes scale-in {
+    from { opacity: 0; transform: scale(0.94); }
+  }
+  @keyframes slide-down {
+    from { opacity: 0; transform: translateY(-6px); }
+  }
+  @keyframes drop-in {
+    from { opacity: 0; transform: translate(-50%, -10px) scale(0.98); }
+  }
+  @keyframes heart-pop {
+    0% { transform: scale(1); }
+    35% { transform: scale(1.32); }
+    65% { transform: scale(0.92); }
+    100% { transform: scale(1); }
+  }
+  @keyframes icon-swap {
+    from { opacity: 0; transform: scale(0.6) rotate(-12deg); }
+  }
+
+  /* ── Pages ──────────────────────────────────────────────────────── */
+  /* Every route change: the page settles up into place. */
+  .shell-main { animation: rise-in var(--t-emphasized) var(--ease-out-soft); }
+  .shell-main-clear { animation: fade-in var(--t-ambient) var(--ease); }
+
+  /* Hero headers build up: art, then title, then the rest. */
+  .album-hero .hero-art,
+  .artist-hero > .av,
+  .artist-hero > .art,
+  .genre-hero > .art,
+  .genre-hero > .mosaic {
+    animation: scale-in 420ms var(--ease-out-soft) both;
+  }
+  .album-hero > div > *,
+  .artist-hero > div > *,
+  .genre-hero > div > * {
+    animation: rise-in 420ms var(--ease-out-soft) both;
+  }
+  .album-hero > div > :nth-child(2), .artist-hero > div > :nth-child(2), .genre-hero > div > :nth-child(2) { animation-delay: 40ms; }
+  .album-hero > div > :nth-child(3), .artist-hero > div > :nth-child(3), .genre-hero > div > :nth-child(3) { animation-delay: 80ms; }
+  .album-hero > div > :nth-child(4), .artist-hero > div > :nth-child(4), .genre-hero > div > :nth-child(4) { animation-delay: 120ms; }
+  .album-hero > div > :nth-child(5), .genre-hero > div > :nth-child(5) { animation-delay: 160ms; }
+  .hero-info { animation: rise-in 420ms var(--ease-out-soft) 160ms both; }
+
+  /* ── Collections stagger in ─────────────────────────────────────── */
+  .tile,
+  .genre-tile,
+  .top-row,
+  .hist-row,
+  .fr:not(.hd),
+  .folder-line,
+  .qr,
+  .more-chip,
+  .skeleton-grid > div {
+    animation: rise-in 360ms var(--ease-out-soft) both;
+    animation-delay: calc(var(--i, 0) * var(--stagger));
+  }
+  .album-tracks .tr-row:not(.tr-head) { animation: fade-in 260ms var(--ease) both; }
+  .welcome > * { animation: rise-in 520ms var(--ease-out-soft) both; }
+  .welcome > :nth-child(2) { animation-delay: 60ms; }
+  .welcome > :nth-child(3) { animation-delay: 110ms; }
+  .welcome > :nth-child(4) { animation-delay: 160ms; }
+  .welcome > :nth-child(5) { animation-delay: 210ms; }
+  .welcome > :nth-child(6) { animation-delay: 260ms; }
+  .welcome-mark path:last-of-type {
+    stroke-dasharray: 60;
+    stroke-dashoffset: 60;
+    animation: draw-arc 900ms var(--ease-out-soft) 200ms forwards;
+  }
+  @keyframes draw-arc {
+    to { stroke-dashoffset: 0; }
+  }
+  .empty-card { animation: rise-in 360ms var(--ease-out-soft) both; }
+  .scan-banner { animation: slide-down var(--t-emphasized) var(--ease-out-soft); }
+
+  /* ── Artwork ───────────────────────────────────────────────────── */
+  /* Covers fade in once decoded instead of popping line by line. */
+  .art-loading .art-img { opacity: 0; transition: opacity 280ms var(--ease); }
+  .art-loading.art-ready .art-img { opacity: 1; }
+  .art-loading { background-color: var(--bg3); }
+  /* A new track's cover eases in on Now Playing. */
+  .np-art .art-img { transition: opacity 360ms var(--ease), transform 600ms var(--ease-out-soft); }
+  .np-art.art-loading:not(.art-ready) .art-img { transform: scale(1.03); }
+
+  /* ── Album tiles: lift on hover, controls rise into place ─────────── */
+  .tile-art {
+    transition: transform 260ms var(--ease-out-soft), box-shadow 260ms var(--ease-out-soft);
+  }
+  .tile-art:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+  }
+  .tile.now .tile-art:hover { box-shadow: 0 0 0 2px var(--ac), 0 16px 36px rgba(0, 0, 0, 0.5); }
+  .tile-art:active { transform: translateY(-1px) scale(0.99); }
+  .tile-hover { transition: opacity 200ms var(--ease); }
+  .tile-hover .tile-play,
+  .tile-hover .tile-mini {
+    transform: translateY(6px) scale(0.9);
+    opacity: 0;
+    transition: transform 260ms var(--ease-spring), opacity 180ms var(--ease);
+  }
+  .tile-hover .tile-mini:last-child { transition-delay: 30ms; }
+  .tile-art:hover .tile-hover .tile-play,
+  .tile-art:hover .tile-hover .tile-mini,
+  .tile-art:focus-visible .tile-hover .tile-play,
+  .tile-art:focus-visible .tile-hover .tile-mini {
+    transform: none;
+    opacity: 1;
+  }
+  .tile-badge { animation: pop-in 260ms var(--ease-spring) both; }
+  .genre-art { transition: transform 260ms var(--ease-out-soft), box-shadow 260ms var(--ease-out-soft); }
+  .genre-tile:hover .genre-art { transform: translateY(-3px); box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45); }
+
+  /* ── Buttons & controls respond to touch ─────────────────────────── */
+  .ib { transition: background-color var(--t-micro) var(--ease), color var(--t-micro) var(--ease), transform var(--t-micro) var(--ease); }
+  .ib:active:not(:disabled) { transform: scale(0.92); }
+  .btn { transition: background-color var(--t-micro) var(--ease), transform var(--t-micro) var(--ease), filter var(--t-micro) var(--ease); }
+  .play { transition: filter var(--t-micro) var(--ease), transform 180ms var(--ease-spring), box-shadow 180ms var(--ease); }
+  .play:hover:not(:disabled) { transform: scale(1.05); }
+  .play:active:not(:disabled) { transform: scale(0.94); }
+  .play .ic.swap { animation: icon-swap 200ms var(--ease-spring); }
+  .heart.on .ic,
+  .heart-btn.on .ic,
+  .ib.on .ic.pop { animation: heart-pop 420ms var(--ease-out-soft); }
+  .nv { transition: background-color var(--t-standard) var(--ease), color var(--t-standard) var(--ease); }
+  .nv .ic { transition: color var(--t-standard) var(--ease), transform 220ms var(--ease-spring); }
+  .nv:active .ic { transform: scale(0.9); }
+  .tabs > button::after { content: none; }
+
+  /* Seek and progress bars glide between the 200 ms position reports. */
+  .slider-seek:not(.hot) .bar > i { transition: width 200ms linear; }
+  .slider-seek:not(.hot) .knob { transition: left 200ms linear, opacity var(--t-micro) var(--ease); }
+  .q-now .bar > i { transition: width 200ms linear; }
+
+  /* ── Overlays ──────────────────────────────────────────────────── */
+  .menu-open { animation: pop-in 150ms var(--ease-out-soft); transform-origin: top left; }
+  .dlg-scrim { animation: fade-in 160ms var(--ease); }
+  .dlg-scrim .dlg { animation: pop-in 220ms var(--ease-out-soft); }
+  .dlg-scrim.closing { animation: fade-in 140ms var(--ease) reverse forwards; }
+  .dlg-scrim.closing .dlg { animation: pop-in 140ms var(--ease) reverse forwards; }
+  .search-scrim { animation: fade-in 160ms var(--ease); }
+  .search-scrim .search-dlg { animation: drop-in 240ms var(--ease-out-soft); }
+  .search-scrim.closing { animation: fade-in 120ms var(--ease) reverse forwards; }
+  .search-scrim.closing .search-dlg { animation: drop-in 120ms var(--ease) reverse forwards; }
+  .res-wrap .res, .top-res { transition: background-color var(--t-micro) var(--ease), box-shadow var(--t-micro) var(--ease); }
+  .search-body > * { animation: fade-in 180ms var(--ease) both; }
+  .tooltip { animation: fade-in 120ms var(--ease); }
+
+  /* ── Reduced motion ────────────────────────────────────────────── */
+  .reduce-motion .tile-art:hover,
+  .reduce-motion .genre-tile:hover .genre-art { transform: none; }
+  .reduce-motion .tile-hover .tile-play,
+  .reduce-motion .tile-hover .tile-mini { transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .app *,
+    .app *::before,
+    .app *::after {
+      animation-duration: 1ms !important;
+      animation-delay: 0s !important;
+    }
+    .tile-art:hover,
+    .genre-tile:hover .genre-art { transform: none; }
+  }
+}

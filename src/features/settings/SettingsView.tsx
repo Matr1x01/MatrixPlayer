@@ -8,6 +8,7 @@ import { usePlayer } from '@/stores/player';
 import type { AppInfo } from '@/types/preferences';
 
 import { AppearanceSettings, SettingRow } from './AppearanceSettings';
+import { LibrarySettings } from './LibrarySettings';
 import { SettingsPreview } from './SettingsPreview';
 import { SHORTCUTS } from './shortcuts';
 
@@ -41,7 +42,6 @@ const SECTIONS: { id: Section; label: string; icon: IconName }[] = [
 /** What each not-yet-configurable section will hold, stated plainly. */
 const PENDING: Partial<Record<Section, string>> = {
   general: 'Startup behaviour and session restore will live here.',
-  library: 'Music folders, rescans and file watching arrive with library indexing.',
   dsp: 'Equalizer presets and DSP stages arrive with the DSP milestone.',
   nowPlaying: 'Visualizer and layout options arrive with the audio analysis stage. The background style is under Appearance.',
   lyrics: 'Lyrics sources and sync offsets arrive with lyrics support.',
@@ -116,8 +116,10 @@ function About({ info }: { info: AppInfo | null }) {
   );
 }
 
-export function SettingsView() {
-  const [section, setSection] = useState<Section>('appearance');
+export function SettingsView({ initial }: { initial?: string }) {
+  const [section, setSection] = useState<Section>(
+    SECTIONS.some((s) => s.id === initial) ? (initial as Section) : 'appearance',
+  );
   const [info, setInfo] = useState<AppInfo | null>(null);
   useEffect(() => {
     void systemApi.appInfo().then(setInfo);
@@ -145,6 +147,7 @@ export function SettingsView() {
             <h1 className="page-title">{current.label}</h1>
           </div>
           {section === 'appearance' && <AppearanceSettings />}
+          {section === 'library' && <LibrarySettings />}
           {section === 'playback' && <PlaybackSettings />}
           {section === 'output' && <OutputSettings />}
           {section === 'shortcuts' && <ShortcutSettings />}

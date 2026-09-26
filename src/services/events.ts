@@ -2,6 +2,7 @@
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
+import type { LibraryChange, ScanStatus } from '@/types/library';
 import type { PlaybackStatus, PlayerError, QueueSnapshot, SignalPath, TrackInfo, VolumeState } from '@/types/player';
 
 export interface CoreEvents {
@@ -15,6 +16,8 @@ export interface CoreEvents {
   'audio-error': PlayerError;
   'player-resync': null;
   'tracks-queued': { count: number };
+  'library-scan': ScanStatus;
+  'library-changed': LibraryChange;
 }
 
 export function onCoreEvent<K extends keyof CoreEvents>(name: K, handler: (payload: CoreEvents[K]) => void): Promise<UnlistenFn> {

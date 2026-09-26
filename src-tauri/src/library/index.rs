@@ -369,7 +369,8 @@ pub async fn refresh_albums(db: &Database, albums: Option<&[i64]>) -> AppResult<
                 artwork_id = (SELECT artwork_id FROM tracks t WHERE t.album_id = albums.id AND artwork_id IS NOT NULL
                         ORDER BY disc_number, track_number, title_key LIMIT 1),
                 (codec, lossless, sample_rate, bit_depth, bitrate_kbps) = (
-                    SELECT codec, lossless, sample_rate, bit_depth, CAST(AVG(bitrate_kbps) AS INTEGER)
+                    SELECT CASE WHEN codec = 'PCM' THEN container ELSE codec END, lossless, sample_rate, bit_depth,
+                        CAST(AVG(bitrate_kbps) AS INTEGER)
                     FROM tracks t WHERE t.album_id = albums.id
                     GROUP BY codec, sample_rate, bit_depth ORDER BY COUNT(*) DESC LIMIT 1)
              WHERE id IN ({list}) AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = albums.id)"

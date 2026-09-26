@@ -17,6 +17,9 @@ pub enum OutputBackend {
     PulseAudio,
     Alsa,
     Auto,
+    /// Discards audio in real time (`MATRIXPLAYER_AUDIO_SINK=null`), for
+    /// headless runs and troubleshooting.
+    Null,
 }
 
 impl OutputBackend {
@@ -26,6 +29,7 @@ impl OutputBackend {
             Self::PulseAudio => "pulsesink",
             Self::Alsa => "alsasink",
             Self::Auto => "autoaudiosink",
+            Self::Null => "fakesink",
         }
     }
 }
@@ -39,13 +43,14 @@ pub struct Output {
 }
 
 /// Creates the first available output sink, honouring `MATRIXPLAYER_AUDIO_SINK`
-/// (`pipewire`, `pulse`, `alsa` or `auto`) when set, for troubleshooting.
+/// (`pipewire`, `pulse`, `alsa`, `auto` or `null`) when set, for troubleshooting.
 pub fn create() -> AppResult<Output> {
     let forced = std::env::var("MATRIXPLAYER_AUDIO_SINK").ok().and_then(|v| match v.as_str() {
         "pipewire" => Some(OutputBackend::PipeWire),
         "pulse" => Some(OutputBackend::PulseAudio),
         "alsa" => Some(OutputBackend::Alsa),
         "auto" => Some(OutputBackend::Auto),
+        "null" => Some(OutputBackend::Null),
         _ => None,
     });
     let candidates: Vec<_> = forced.into_iter().chain(PREFERENCE).collect();
@@ -54,6 +59,9 @@ pub fn create() -> AppResult<Output> {
         let Ok(sink) = gst::ElementFactory::make(backend.factory()).name("matrixplayer-output").build() else {
             continue;
         };
+        if backend == OutputBackend::Null {
+            sink.set_property("sync", true);
+        }
         describe_stream(&sink);
         log::info!("audio output: {}", backend.factory());
         return Ok(Output { sink, backend });

@@ -9,6 +9,8 @@ import './features/queue/queue.css';
 import './features/now-playing/now-playing.css';
 import './features/settings/settings.css';
 import './features/sound/sound.css';
+import './features/library/library.css';
+import './styles/motion.css';
 
 import { App } from './app/App';
 

@@ -55,9 +55,16 @@ export interface ArtworkInfo {
   palette: [Rgb, Rgb, Rgb];
 }
 
+export interface LibraryRef {
+  trackId: number;
+  albumId: number | null;
+  artistId: number | null;
+  folderId: number;
+}
+
 export interface TrackInfo {
-  /** The library row this track came from, when it is in the library. */
-  libraryId: number | null;
+  /** Where the track sits in the library, when it is indexed. */
+  library: LibraryRef | null;
   displayPath: string;
   fileName: string;
   metadata: TrackMetadata;
@@ -95,7 +102,7 @@ export interface StreamFormat {
   channels: number;
 }
 
-export type OutputBackend = 'pipeWire' | 'pulseAudio' | 'alsa' | 'auto';
+export type OutputBackend = 'pipeWire' | 'pulseAudio' | 'alsa' | 'auto' | 'null';
 
 export interface SignalPath {
   backend: OutputBackend;

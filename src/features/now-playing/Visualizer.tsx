@@ -44,6 +44,7 @@ export function Visualizer({ track }: { track: TrackInfo }) {
         {mode === 'artwork' && (
           <Artwork
             artwork={track.artwork}
+            full
             title={track.metadata.album ?? track.metadata.title}
             className="np-viz-art"
             style={{ width: '100%', height: '100%', aspectRatio: 'auto', borderRadius: 6 }}

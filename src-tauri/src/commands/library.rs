@@ -106,9 +106,10 @@ pub async fn library_remove_root(state: State<'_, AppState>, id: i64) -> AppResu
     state.library.remove_root(id).await
 }
 
+/// Rescans for changes; `full` also re-reads the tags of unchanged files.
 #[tauri::command]
-pub fn library_rescan(state: State<'_, AppState>, root: Option<i64>) {
-    state.library.rescan(root);
+pub fn library_rescan(state: State<'_, AppState>, root: Option<i64>, full: Option<bool>) {
+    state.library.rescan(root, full.unwrap_or(false));
 }
 
 #[tauri::command]
