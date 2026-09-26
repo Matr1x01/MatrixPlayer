@@ -1,7 +1,7 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useState } from 'react';
 
-import { FermataMark } from '@/components/icons/FermataMark';
+import { AppMark } from '@/components/icons/AppMark';
 import { Icon } from '@/components/icons/Icon';
 import { IconButton } from '@/components/ui/IconButton';
 import { useNavigation } from '@/stores/navigation';
@@ -62,8 +62,8 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
       {variant === 'default' && (
         <>
           <div className="tb-brand" data-tauri-drag-region>
-            <FermataMark />
-            <span data-tauri-drag-region>Fermata</span>
+            <AppMark />
+            <span data-tauri-drag-region>MatrixPlayer</span>
           </div>
           <IconButton icon="chevL" label="Back" shortcut="Alt ←" onClick={back} disabled={!canGoBack} />
           <IconButton icon="chevR" label="Forward" shortcut="Alt →" onClick={forward} disabled={!canGoForward} />
@@ -72,8 +72,8 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
       {variant === 'settings' && (
         <>
           <div className="tb-brand" data-tauri-drag-region>
-            <FermataMark />
-            <span data-tauri-drag-region>Fermata</span>
+            <AppMark />
+            <span data-tauri-drag-region>MatrixPlayer</span>
           </div>
           <IconButton icon="chevL" label="Back to library" shortcut="Esc" onClick={() => (canGoBack ? back() : navigate('home'))} />
           <span className="ml-1 font-semibold" data-tauri-drag-region>
@@ -84,7 +84,7 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
       {variant === 'nowPlaying' && (
         <>
           <div className="tb-mark" data-tauri-drag-region>
-            <FermataMark />
+            <AppMark />
           </div>
           <button
             type="button"

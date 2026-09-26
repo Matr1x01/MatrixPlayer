@@ -1,7 +1,7 @@
 //! Tag and stream-property extraction.
 //!
 //! Metadata comes from the file itself via `lofty`. Where a field is missing
-//! and Fermata fills it in (for example a title taken from the file name) the
+//! and MatrixPlayer fills it in (for example a title taken from the file name) the
 //! field is listed in [`TrackMetadata::derived_fields`] so the UI can show the
 //! difference between what the file says and what the application inferred.
 
@@ -38,7 +38,7 @@ pub struct TrackMetadata {
     pub tag_format: Option<String>,
     /// Number of tag items in that tag, for the "File" panel.
     pub tag_item_count: usize,
-    /// Fields whose value was derived by Fermata rather than read from a tag.
+    /// Fields whose value was derived by MatrixPlayer rather than read from a tag.
     pub derived_fields: Vec<&'static str>,
 }
 

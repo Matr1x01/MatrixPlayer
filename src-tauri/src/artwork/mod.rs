@@ -24,6 +24,12 @@ use crate::metadata::EmbeddedPicture;
 /// Folder images larger than this are ignored rather than read into memory.
 const MAX_FOLDER_ART_BYTES: u64 = 25 * 1024 * 1024;
 const ID_LEN: usize = 32;
+/// Longest side of grid thumbnails: sharp at 2× for the largest tiles.
+const THUMB_SIZE: u32 = 360;
+
+fn valid_id(id: &str) -> bool {
+    id.len() == ID_LEN && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
 const FOLDER_ART_STEMS: &[&str] = &["cover", "folder", "front", "album", "albumart"];
 const FOLDER_ART_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
@@ -53,6 +59,11 @@ pub struct ArtworkStore {
     known: Mutex<HashMap<String, ArtworkInfo>>,
 }
 
+/// Folder artwork already looked up during one scan, keyed by directory, so
+/// a folder of twenty tracks is searched for a cover image once, not twenty
+/// times.
+pub type FolderArtCache = Mutex<HashMap<PathBuf, Option<ArtworkInfo>>>;
+
 impl ArtworkStore {
     pub fn new(dir: PathBuf) -> AppResult<Self> {
         std::fs::create_dir_all(&dir)?;
@@ -60,15 +71,33 @@ impl ArtworkStore {
     }
 
     /// Finds artwork for a track: the embedded cover first, then a cover
-    /// image in the track's folder. Failures are logged, never fatal.
-    pub fn resolve(&self, audio_path: &Path, embedded: Option<&EmbeddedPicture>) -> Option<ArtworkInfo> {
+    /// image in the track's folder, remembered in `cache` when given.
+    /// Failures are logged, never fatal.
+    pub fn resolve_cached(
+        &self,
+        audio_path: &Path,
+        embedded: Option<&EmbeddedPicture>,
+        cache: Option<&FolderArtCache>,
+    ) -> Option<ArtworkInfo> {
         if let Some(picture) = embedded {
             match self.store(&picture.data, ArtworkSource::Embedded) {
                 Ok(info) => return Some(info),
                 Err(e) => log::warn!("embedded artwork in {}: {e}", audio_path.display()),
             }
         }
-        let image_path = find_folder_art(audio_path.parent()?)?;
+        let dir = audio_path.parent()?;
+        if let Some(cached) = cache.and_then(|c| c.lock().unwrap().get(dir).cloned()) {
+            return cached;
+        }
+        let found = self.folder_art(dir);
+        if let Some(cache) = cache {
+            cache.lock().unwrap().insert(dir.to_path_buf(), found.clone());
+        }
+        found
+    }
+
+    fn folder_art(&self, dir: &Path) -> Option<ArtworkInfo> {
+        let image_path = find_folder_art(dir)?;
         let bytes = read_limited(&image_path).ok()?;
         self.store(&bytes, ArtworkSource::Folder)
             .inspect_err(|e| log::warn!("folder artwork {}: {e}", image_path.display()))
@@ -100,8 +129,30 @@ impl ArtworkStore {
     /// Returns the cached file for `id`, rejecting anything that is not a
     /// well-formed id so request paths can never escape the cache directory.
     pub fn file_for(&self, id: &str) -> Option<PathBuf> {
-        let valid = id.len() == ID_LEN && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
-        valid.then(|| self.dir.join(id)).filter(|p| p.is_file())
+        valid_id(id).then(|| self.dir.join(id)).filter(|p| p.is_file())
+    }
+
+    /// A small JPEG of `id` for grids and lists, made on first request and
+    /// kept next to the original. Images already small enough are served as
+    /// they are.
+    pub fn thumbnail_for(&self, id: &str) -> Option<PathBuf> {
+        let original = self.file_for(id)?;
+        let thumb = self.dir.join(format!("{id}.t{THUMB_SIZE}.jpg"));
+        if thumb.is_file() {
+            return Some(thumb);
+        }
+        let image = image::load_from_memory(&std::fs::read(&original).ok()?).ok()?;
+        if image.width() <= THUMB_SIZE && image.height() <= THUMB_SIZE {
+            return Some(original);
+        }
+        let small = image.thumbnail(THUMB_SIZE, THUMB_SIZE).to_rgb8();
+        let tmp = self.dir.join(format!("{id}.t{THUMB_SIZE}.tmp"));
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp).ok()?);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 88);
+        small.write_with_encoder(encoder).ok()?;
+        drop(out);
+        std::fs::rename(&tmp, &thumb).ok()?;
+        Some(thumb)
     }
 }
 
@@ -177,6 +228,23 @@ mod tests {
         assert_eq!((a.width, a.height), (8, 8));
         assert_eq!(a.palette, [[200, 40, 10]; 3]);
         assert_eq!(std::fs::read(store.file_for(&a.id).unwrap()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn makes_thumbnails_of_large_images_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ArtworkStore::new(dir.path().to_path_buf()).unwrap();
+        let small = store.store(&png([1, 2, 3]), ArtworkSource::Folder).unwrap();
+        assert_eq!(store.thumbnail_for(&small.id), store.file_for(&small.id));
+
+        let big = image::RgbImage::from_pixel(1200, 800, image::Rgb([90, 20, 200]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(big).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let big = store.store(&bytes.into_inner(), ArtworkSource::Embedded).unwrap();
+        let thumb = store.thumbnail_for(&big.id).unwrap();
+        let decoded = image::open(&thumb).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (THUMB_SIZE, 240));
+        assert!(store.thumbnail_for("../x").is_none());
     }
 
     #[test]

@@ -29,7 +29,7 @@ export interface TrackMetadata {
   replayGain: ReplayGain;
   tagFormat: string | null;
   tagItemCount: number;
-  /** Fields Fermata inferred rather than read from the file's tags. */
+  /** Fields MatrixPlayer inferred rather than read from the file's tags. */
   derivedFields: string[];
 }
 
@@ -56,6 +56,8 @@ export interface ArtworkInfo {
 }
 
 export interface TrackInfo {
+  /** The library row this track came from, when it is in the library. */
+  libraryId: number | null;
   displayPath: string;
   fileName: string;
   metadata: TrackMetadata;

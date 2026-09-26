@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
 
-/// Extensions Fermata offers to open. Playback itself is delegated to
+/// Extensions MatrixPlayer offers to open. Playback itself is delegated to
 /// GStreamer, so a listed format still fails gracefully if the matching
 /// decoder plugin is not installed.
 pub const AUDIO_EXTENSIONS: &[&str] = &[

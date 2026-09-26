@@ -8,6 +8,13 @@ use gstreamer::prelude::*;
 
 /// Encodes `seconds` of a sine tone as a tagged 16-bit/44.1 kHz stereo FLAC.
 pub fn write_flac(path: &Path, seconds: f64, title: &str) {
+    let tags = format!("title=\"{title}\",artist=\"Test Artist\",album=\"Test Album\"");
+    write_flac_tags(path, seconds, &tags);
+}
+
+/// Like [`write_flac`], with tags in GStreamer's structure syntax, e.g.
+/// `title="A",album-artist="B",track-number=(uint)3`.
+pub fn write_flac_tags(path: &Path, seconds: f64, tags: &str) {
     gst::init().unwrap();
     let buffers = (seconds * 44_100.0 / 1024.0).ceil() as u32;
     let pipeline = gst::parse::launch(&format!(
@@ -18,7 +25,6 @@ pub fn write_flac(path: &Path, seconds: f64, title: &str) {
     .unwrap()
     .downcast::<gst::Pipeline>()
     .unwrap();
-    let tags = format!("title=\"{title}\",artist=\"Test Artist\",album=\"Test Album\"");
     pipeline.by_name("tags").unwrap().set_property("tags", tags);
     pipeline.by_name("out").unwrap().set_property("location", path.to_str().unwrap());
 

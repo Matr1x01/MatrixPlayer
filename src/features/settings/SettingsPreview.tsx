@@ -19,7 +19,7 @@ export function SettingsPreview() {
       <span className="cap pt-[34px]">Preview</span>
       <div className="set-preview">
         <div className="set-preview-head">
-          <Artwork artwork={track?.artwork} size={72} title={track?.metadata.album ?? 'Fermata'} />
+          <Artwork artwork={track?.artwork} size={72} title={track?.metadata.album ?? 'MatrixPlayer'} />
           <div className="flex min-w-0 flex-col gap-[3px]">
             <span className="cap" style={{ color: 'var(--ac)' }}>
               Now playing

@@ -27,7 +27,7 @@ pub struct DspChain {
 
 impl DspChain {
     pub fn build() -> AppResult<Self> {
-        let bin = gst::Bin::builder().name("fermata-dsp").build();
+        let bin = gst::Bin::builder().name("matrixplayer-dsp").build();
 
         let to_float = gst::ElementFactory::make("audioconvert").name("dsp-in").build()?;
         let float_caps = gst::ElementFactory::make("capsfilter")

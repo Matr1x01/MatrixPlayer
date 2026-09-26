@@ -8,6 +8,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::broadcast::{self, error::RecvError};
 
+use crate::library::LibraryEvent;
 use crate::player::{PlaybackStatus, PlayerError, PlayerEvent, TrackInfo};
 
 pub const PLAYBACK_STATE_CHANGED: &str = "playback-state-changed";
@@ -21,6 +22,8 @@ pub const AUDIO_ERROR: &str = "audio-error";
 /// Sent when events were dropped; the frontend should refetch the snapshot.
 pub const PLAYER_RESYNC: &str = "player-resync";
 pub const TRACKS_QUEUED: &str = "tracks-queued";
+pub const LIBRARY_SCAN: &str = "library-scan";
+pub const LIBRARY_CHANGED: &str = "library-changed";
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +76,20 @@ pub fn forward_player_events(app: AppHandle, mut events: broadcast::Receiver<Pla
                 PlayerEvent::QueueState(state) => emit(&app, QUEUE_STATE_CHANGED, state),
                 PlayerEvent::Signal(signal) => emit(&app, SIGNAL_PATH_CHANGED, signal),
                 PlayerEvent::Error(error) => emit(&app, AUDIO_ERROR, error),
+            }
+        }
+    });
+}
+
+pub fn forward_library_events(app: AppHandle, mut events: broadcast::Receiver<LibraryEvent>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(LibraryEvent::Scan(status)) => emit(&app, LIBRARY_SCAN, status),
+                Ok(LibraryEvent::Changed(what)) => emit(&app, LIBRARY_CHANGED, what),
+                // Missed changes: have the UI refetch everything.
+                Err(RecvError::Lagged(_)) => emit(&app, LIBRARY_CHANGED, crate::library::LibraryChange::Tracks),
+                Err(RecvError::Closed) => break,
             }
         }
     });

@@ -1,4 +1,4 @@
-# Fermata
+# MatrixPlayer
 
 An audio-focused music player for Linux, in the spirit of Poweramp: native
 playback on GStreamer and PipeWire, a Tauri 2 shell, and a React UI built from
@@ -28,8 +28,8 @@ cargo test --manifest-path src-tauri/Cargo.toml -- --ignored   # + a muted run t
 npx tauri build                     # release build and packages
 ```
 
-`FERMATA_AUDIO_SINK=pipewire|pulse|alsa|auto` forces an output backend.
-`RUST_LOG=fermata_lib=debug` shows pipeline decisions (gapless queueing, errors).
+`MATRIXPLAYER_AUDIO_SINK=pipewire|pulse|alsa|auto` forces an output backend.
+`RUST_LOG=matrixplayer_lib=debug` shows pipeline decisions (gapless queueing, errors).
 
 ## Architecture
 
@@ -52,7 +52,7 @@ Rust (`src-tauri/src`):
 | `audio/` | `AudioEngine`: one `playbin3` for the app's lifetime. Gapless via `about-to-finish`; bus messages are tagged with a pipeline *epoch* at post time so events from a replaced stream are dropped. Reports the negotiated decoded and output formats. |
 | `dsp/` | The processing chain installed as playbin's `audio-filter`, in F64. Volume lives here today; ReplayGain, EQ and the rest slot in before it. |
 | `player/` | `Queue` (play order, shuffle, repeat) and the player service actor. Commands and engine events are handled on one task; broken files are reported and skipped. |
-| `metadata/` | Tags and stream properties via `lofty`; fields Fermata infers are listed in `derivedFields`. |
+| `metadata/` | Tags and stream properties via `lofty`; fields MatrixPlayer infers are listed in `derivedFields`. |
 | `artwork/` | Content-addressed artwork cache served to the webview through the `art://` scheme (no filesystem access from the frontend). |
 | `database/` | SQLite via SQLx with embedded migrations. Holds settings today; library tables arrive with the scanner. |
 | `preferences.rs` | Validated UI preferences (theme, accent, density, scale…). |

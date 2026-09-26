@@ -54,9 +54,9 @@ pub struct AudioEngine {
 impl AudioEngine {
     pub fn new(events: UnboundedSender<EngineMessage>, out: output::Output) -> AppResult<Self> {
         let playbin = gst::ElementFactory::make("playbin3")
-            .name("fermata-player")
+            .name("matrixplayer-player")
             .build()
-            .or_else(|_| gst::ElementFactory::make("playbin").name("fermata-player").build())
+            .or_else(|_| gst::ElementFactory::make("playbin").name("matrixplayer-player").build())
             .map_err(|_| AppError::Audio("GStreamer playbin is not installed".into()))?;
         // Audio only: never build video or subtitle branches, even for files
         // that carry cover art as a video stream.
@@ -216,7 +216,7 @@ fn spawn_position_ticker(
     let weak = playbin.downgrade();
     let shared = shared.clone();
     std::thread::Builder::new()
-        .name("fermata-position".into())
+        .name("matrixplayer-position".into())
         .spawn(move || {
             while !shared.shutdown.load(Ordering::SeqCst) && !events.is_closed() {
                 std::thread::sleep(POSITION_INTERVAL);
@@ -248,7 +248,7 @@ fn translate(msg: &gst::Message, playbin: &gst::Element, shared: &Shared) -> Opt
             // The newest queued stream is the one being decoded.
             let queued = shared.starting.lock().unwrap().back().map(|(uri, _)| uri.clone());
             let uri = queued.or_else(|| shared.current_uri.lock().unwrap().clone());
-            let from_output = msg.src().is_some_and(|s| s.name().starts_with("fermata-output"));
+            let from_output = msg.src().is_some_and(|s| s.name().starts_with("matrixplayer-output"));
             let (kind, message) = classify(&err.error(), from_output);
             let detail = err.debug().map(|d| d.to_string());
             log::error!("playback error: {} ({:?})", err.error(), detail);

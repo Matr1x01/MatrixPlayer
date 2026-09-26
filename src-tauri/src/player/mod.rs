@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::artwork::{ArtworkInfo, ArtworkStore};
+use crate::artwork::{ArtworkInfo, ArtworkStore, FolderArtCache};
 use crate::audio::{EngineErrorKind, OutputBackend, StreamFormat};
 use crate::metadata::{self, AudioProperties, TrackMetadata};
 
@@ -41,6 +41,8 @@ pub enum PlaybackStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
+    /// The library row this track came from, if it is in the library.
+    pub library_id: Option<i64>,
     #[serde(skip)]
     pub path: PathBuf,
     /// The path for display. Non-UTF-8 bytes are replaced.
@@ -57,11 +59,17 @@ impl TrackInfo {
     /// Reads a file's tags, properties and artwork. Never fails: unreadable
     /// files get a minimal entry and GStreamer decides whether they play.
     pub fn load(path: &Path, artwork: &ArtworkStore) -> Self {
+        Self::load_cached(path, artwork, None)
+    }
+
+    /// [`Self::load`], sharing folder-artwork lookups through `cache`.
+    pub fn load_cached(path: &Path, artwork: &ArtworkStore, cache: Option<&FolderArtCache>) -> Self {
         let display_path = path.to_string_lossy().into_owned();
         let file_name = path.file_name().map_or_else(|| display_path.clone(), |n| n.to_string_lossy().into_owned());
         match metadata::probe(path) {
             Ok(probed) => Self {
-                artwork: artwork.resolve(path, probed.picture.as_ref()),
+                library_id: None,
+                artwork: artwork.resolve_cached(path, probed.picture.as_ref(), cache),
                 path: path.to_path_buf(),
                 display_path,
                 file_name,
@@ -74,7 +82,8 @@ impl TrackInfo {
                 let stem = path.file_stem().map_or_else(|| file_name.clone(), |s| s.to_string_lossy().into_owned());
                 let codec = path.extension().map_or_else(String::new, |e| e.to_string_lossy().to_ascii_uppercase());
                 Self {
-                    artwork: artwork.resolve(path, None),
+                    library_id: None,
+                    artwork: artwork.resolve_cached(path, None, cache),
                     path: path.to_path_buf(),
                     display_path,
                     file_name,
@@ -99,6 +108,7 @@ impl TrackInfo {
     #[cfg(test)]
     pub fn for_test(title: &str) -> Self {
         Self {
+            library_id: None,
             path: PathBuf::from(format!("/music/{title}.flac")),
             display_path: format!("/music/{title}.flac"),
             file_name: format!("{title}.flac"),

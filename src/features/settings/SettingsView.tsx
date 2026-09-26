@@ -71,7 +71,7 @@ function OutputSettings() {
       <SettingRow title="Output" hint="Chosen automatically: PipeWire, then PulseAudio, then ALSA">
         <span className="mono">{backendLabel(signal.backend)}</span>
       </SettingRow>
-      <SettingRow title="Processing" hint="Precision of Fermata's own processing">
+      <SettingRow title="Processing" hint="Precision of MatrixPlayer's own processing">
         <span className="mono">64-bit float</span>
       </SettingRow>
       <SettingRow title="Device selection" hint="Per-device output and exclusive mode">
@@ -103,7 +103,7 @@ function ShortcutSettings() {
 function About({ info }: { info: AppInfo | null }) {
   return (
     <>
-      <SettingRow title="Version" hint="Fermata">
+      <SettingRow title="Version" hint="MatrixPlayer">
         <span className="mono">{info?.version ?? '…'}</span>
       </SettingRow>
       <SettingRow title="Audio engine" hint="Decoding and playback">
@@ -134,7 +134,7 @@ export function SettingsView() {
           </button>
         ))}
         <div className="mt-auto flex flex-col gap-[3px] border-t border-ln p-2.5">
-          <span className="mono t3 text-[10px]">Fermata {info?.version ?? ''}</span>
+          <span className="mono t3 text-[10px]">MatrixPlayer {info?.version ?? ''}</span>
           <span className="mono t3 text-[10px]">Settings are saved automatically</span>
         </div>
       </nav>

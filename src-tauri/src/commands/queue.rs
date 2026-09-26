@@ -28,6 +28,18 @@ pub async fn queue_clear(state: State<'_, AppState>) -> AppResult<()> {
     state.player.command(PlayerCommand::ClearQueue).await
 }
 
+/// Keeps only the playing track.
+#[tauri::command]
+pub async fn queue_clear_others(state: State<'_, AppState>) -> AppResult<()> {
+    state.player.command(PlayerCommand::ClearOthers).await
+}
+
+/// Moves entries before `before`, or to the end of the queue.
+#[tauri::command]
+pub async fn queue_move(state: State<'_, AppState>, ids: Vec<EntryId>, before: Option<EntryId>) -> AppResult<()> {
+    state.player.command(PlayerCommand::MoveEntries { ids, before }).await
+}
+
 /// Asks the user for audio files and queues them. Returns the number of
 /// tracks queued, or 0 if the dialog was cancelled.
 #[tauri::command]
@@ -40,7 +52,7 @@ pub async fn open_audio_files(app: AppHandle, state: State<'_, AppState>, mode: 
         return Ok(0);
     };
     let paths = files.into_iter().filter_map(|f| f.into_path().ok()).collect();
-    state.player.open_paths(paths, mode).await
+    state.open_paths(paths, mode).await
 }
 
 /// Asks the user for a folder and queues every audio file inside it.
@@ -54,5 +66,5 @@ pub async fn open_audio_folder(app: AppHandle, state: State<'_, AppState>, mode:
         return Ok(0);
     };
     let path = folder.into_path().map_err(|_| AppError::InvalidArgument("not a local folder".into()))?;
-    state.player.open_paths(vec![path], mode).await
+    state.open_paths(vec![path], mode).await
 }

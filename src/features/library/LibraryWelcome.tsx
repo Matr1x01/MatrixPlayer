@@ -17,9 +17,9 @@ export function LibraryWelcome() {
         <path d="M42 70a18 18 0 0 1 36 0" stroke="var(--ac)" strokeWidth="3" strokeLinecap="round" />
         <circle cx="60" cy="70" r="5" fill="var(--ac)" />
       </svg>
-      <h2 className="text-[22px] font-bold tracking-[-0.01em]">Point Fermata at your music</h2>
+      <h2 className="text-[22px] font-bold tracking-[-0.01em]">Point MatrixPlayer at your music</h2>
       <p className="t2 max-w-[440px] [text-wrap:pretty]">
-        Open a folder or a few files to start listening. Fermata reads tags, artwork and audio details — your files stay
+        Open a folder or a few files to start listening. MatrixPlayer reads tags, artwork and audio details — your files stay
         exactly where they are. Library indexing, with albums, artists and search, is coming next.
       </p>
       <div className="mt-1 flex gap-2">

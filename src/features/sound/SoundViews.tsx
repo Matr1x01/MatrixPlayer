@@ -25,7 +25,7 @@ export function EqualizerView() {
           }
         >
           Parametric and graphic EQ, presets and per-device profiles arrive with the DSP milestone. Audio already runs through
-          Fermata's 64-bit float processing chain, which is where the EQ will be inserted.
+          MatrixPlayer's 64-bit float processing chain, which is where the EQ will be inserted.
         </EmptyCard>
       </div>
     </div>
@@ -104,7 +104,7 @@ export function DspView() {
               </span>
             </div>
             <p className="t3 text-[12px] [text-wrap:pretty]">
-              Fermata plays through the system's default output. Choosing a device, exclusive access and sample-rate matching
+              MatrixPlayer plays through the system's default output. Choosing a device, exclusive access and sample-rate matching
               arrive with the output-device work in a later milestone.
             </p>
           </section>

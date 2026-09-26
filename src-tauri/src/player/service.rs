@@ -5,7 +5,6 @@
 //! to it through a cloneable [`PlayerHandle`].
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +15,6 @@ use super::{
     EntryId, InsertMode, PlaybackStatus, PlayerError, PlayerEvent, PlayerSnapshot, QueueSnapshot, QueueState,
     RepeatMode, SignalPath, TrackInfo, VolumeState,
 };
-use crate::artwork::ArtworkStore;
 use crate::audio::output::Output;
 use crate::audio::{AudioEngine, EngineError, EngineErrorKind, EngineEvent, EngineMessage, EngineState, StreamFormat};
 use crate::database::{Database, settings};
@@ -65,9 +63,18 @@ pub enum PlayerCommand {
     Insert {
         tracks: Vec<Arc<TrackInfo>>,
         mode: InsertMode,
+        /// With `Replace`: index of the track to start with.
+        start: usize,
     },
     PlayEntry(EntryId),
     RemoveEntry(EntryId),
+    /// Moves entries (in play order) before another entry, or to the end.
+    MoveEntries {
+        ids: Vec<EntryId>,
+        before: Option<EntryId>,
+    },
+    /// Keeps only the current entry.
+    ClearOthers,
     ClearQueue,
 }
 
@@ -82,7 +89,6 @@ enum Request {
 pub struct PlayerHandle {
     requests: mpsc::Sender<Request>,
     events: broadcast::Sender<PlayerEvent>,
-    artwork: Arc<ArtworkStore>,
 }
 
 impl PlayerHandle {
@@ -90,7 +96,6 @@ impl PlayerHandle {
     /// service loop; the caller spawns it on its async runtime.
     pub fn new(
         db: Database,
-        artwork: Arc<ArtworkStore>,
         settings: PlayerSettings,
         output: Output,
     ) -> AppResult<(Self, impl Future<Output = ()> + Send + 'static)> {
@@ -99,7 +104,7 @@ impl PlayerHandle {
         let (requests, requests_rx) = mpsc::channel(64);
         let (events, _) = broadcast::channel(512);
         let player = Player::new(engine, db, events.clone(), settings);
-        Ok((Self { requests, events, artwork }, player.run(requests_rx, engine_rx)))
+        Ok((Self { requests, events }, player.run(requests_rx, engine_rx)))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PlayerEvent> {
@@ -124,27 +129,6 @@ impl PlayerHandle {
         if self.requests.send(Request::Flush(reply)).await.is_ok() {
             let _ = done.await;
         }
-    }
-
-    /// Reads the given files and folders off the async runtime and queues
-    /// every playable file found. Returns how many tracks were queued.
-    pub async fn open_paths(&self, paths: Vec<PathBuf>, mode: InsertMode) -> AppResult<usize> {
-        let artwork = self.artwork.clone();
-        let tracks = tokio::task::spawn_blocking(move || {
-            filesystem::collect_audio_files(&paths)
-                .iter()
-                .map(|path| Arc::new(TrackInfo::load(path, &artwork)))
-                .collect::<Vec<_>>()
-        })
-        .await
-        .map_err(|_| AppError::PlayerUnavailable)?;
-
-        if tracks.is_empty() {
-            return Err(AppError::Unsupported("no playable audio files were found".into()));
-        }
-        let count = tracks.len();
-        self.command(PlayerCommand::Insert { tracks, mode }).await?;
-        Ok(count)
     }
 }
 
@@ -298,13 +282,26 @@ impl Player {
                 self.emit_queue();
                 settings::set(&self.db, "player.shuffle", &shuffle).await
             }
-            PlayerCommand::Insert { tracks, mode } => self.insert(tracks, mode),
+            PlayerCommand::Insert { tracks, mode, start } => self.insert(tracks, mode, start),
             PlayerCommand::PlayEntry(id) => {
                 self.queue.jump_to(id).ok_or_else(|| AppError::InvalidArgument("no such queue entry".into()))?;
                 self.failures = 0;
                 self.load_current(true)
             }
             PlayerCommand::RemoveEntry(id) => self.remove(id),
+            PlayerCommand::MoveEntries { ids, before } => {
+                if self.queue.move_entries(&ids, before) {
+                    self.emit_queue();
+                    self.update_next();
+                }
+                Ok(())
+            }
+            PlayerCommand::ClearOthers => {
+                self.queue.clear_others();
+                self.emit_queue();
+                self.update_next();
+                Ok(())
+            }
             PlayerCommand::ClearQueue => {
                 self.queue.clear();
                 self.engine.stop()?;
@@ -394,9 +391,9 @@ impl Player {
         Ok(())
     }
 
-    fn insert(&mut self, tracks: Vec<Arc<TrackInfo>>, mode: InsertMode) -> AppResult<()> {
+    fn insert(&mut self, tracks: Vec<Arc<TrackInfo>>, mode: InsertMode, start: usize) -> AppResult<()> {
         let had_current = self.queue.current().is_some();
-        self.queue.insert(tracks, mode);
+        self.queue.insert(tracks, mode, start);
         self.emit_queue();
         if mode == InsertMode::Replace || !had_current {
             self.failures = 0;
@@ -748,12 +745,26 @@ fn file_name_from_uri(uri: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use crate::artwork::ArtworkStore;
     use crate::test_support::write_flac;
 
     struct Harness {
         player: PlayerHandle,
         events: broadcast::Receiver<PlayerEvent>,
+        artwork: Arc<ArtworkStore>,
         dir: tempfile::TempDir,
+    }
+
+    impl Harness {
+        /// Reads the files and replaces the queue with them.
+        async fn open(&self, paths: Vec<PathBuf>) -> usize {
+            let tracks: Vec<_> = paths.iter().map(|p| Arc::new(TrackInfo::load(p, &self.artwork))).collect();
+            let count = tracks.len();
+            self.player.command(PlayerCommand::Insert { tracks, mode: InsertMode::Replace, start: 0 }).await.unwrap();
+            count
+        }
     }
 
     async fn harness() -> Harness {
@@ -762,10 +773,10 @@ mod tests {
         let db = Database::in_memory().await.unwrap();
         let artwork = Arc::new(ArtworkStore::new(dir.path().join("art")).unwrap());
         let settings = PlayerSettings { volume: 0.8, muted: false, repeat: RepeatMode::Off, shuffle: false };
-        let (player, service) = PlayerHandle::new(db, artwork, settings, Output::fake(true)).unwrap();
+        let (player, service) = PlayerHandle::new(db, settings, Output::fake(true)).unwrap();
         tokio::spawn(service);
         let events = player.subscribe();
-        Harness { player, events, dir }
+        Harness { player, events, artwork, dir }
     }
 
     /// Collects events up to and including the first one matching `done`.
@@ -818,7 +829,7 @@ mod tests {
         write_flac(&a, 0.4, "First");
         write_flac(&b, 0.4, "Second");
 
-        assert_eq!(h.player.open_paths(vec![a, b], InsertMode::Replace).await.unwrap(), 2);
+        assert_eq!(h.open(vec![a, b]).await, 2);
         let events = wait_for(&mut h.events, is_status(PlaybackStatus::Stopped)).await;
 
         assert_eq!(track_titles(&events), ["First", "Second"]);
@@ -842,7 +853,7 @@ mod tests {
         let good = h.dir.path().join("good.flac");
         write_flac(&good, 2.0, "Good");
 
-        h.player.open_paths(vec![bad, good], InsertMode::Replace).await.unwrap();
+        h.open(vec![bad, good]).await;
         let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
 
         let error = events.iter().find_map(|e| if let PlayerEvent::Error(err) = e { Some(err) } else { None });
@@ -855,7 +866,7 @@ mod tests {
         let mut h = harness().await;
         let a = h.dir.path().join("a.flac");
         write_flac(&a, 4.0, "Long");
-        h.player.open_paths(vec![a], InsertMode::Replace).await.unwrap();
+        h.open(vec![a]).await;
         wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
 
         h.player.command(PlayerCommand::Pause).await.unwrap();

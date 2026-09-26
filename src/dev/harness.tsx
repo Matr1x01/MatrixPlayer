@@ -32,6 +32,7 @@ function svg(defs: string, fills: string[]): string {
 
 function track(title: string, n: number, ms: number, over: Partial<TrackInfo['metadata']> = {}, art = 'lfw'): TrackInfo {
   return {
+    libraryId: n,
     displayPath: `~/Music/Electronic/Halden Reach/2021 - Low Frequency Weather/${String(n).padStart(2, '0')} - ${title}.flac`,
     fileName: `${String(n).padStart(2, '0')} - ${title}.flac`,
     metadata: {
@@ -131,7 +132,7 @@ mockIPC(
       case 'update_ui_preferences':
         return Object.assign(prefs, (args as { patch: Partial<UiPreferences> }).patch);
       case 'get_app_info':
-        return { name: 'Fermata', version: '0.1.0', gstreamerVersion: 'GStreamer 1.28.7' };
+        return { name: 'MatrixPlayer', version: '0.1.0', gstreamerVersion: 'GStreamer 1.28.7' };
       case 'plugin:window|is_fullscreen':
         return false;
       default:

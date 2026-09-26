@@ -1,6 +1,6 @@
 //! Audio output selection.
 //!
-//! Fermata talks to PipeWire natively when the `pipewiresink` plugin is
+//! MatrixPlayer talks to PipeWire natively when the `pipewiresink` plugin is
 //! available, falls back to PipeWire's PulseAudio interface, then to plain
 //! ALSA, and finally to whatever `autoaudiosink` picks.
 
@@ -38,10 +38,10 @@ pub struct Output {
     pub backend: OutputBackend,
 }
 
-/// Creates the first available output sink, honouring `FERMATA_AUDIO_SINK`
+/// Creates the first available output sink, honouring `MATRIXPLAYER_AUDIO_SINK`
 /// (`pipewire`, `pulse`, `alsa` or `auto`) when set, for troubleshooting.
 pub fn create() -> AppResult<Output> {
-    let forced = std::env::var("FERMATA_AUDIO_SINK").ok().and_then(|v| match v.as_str() {
+    let forced = std::env::var("MATRIXPLAYER_AUDIO_SINK").ok().and_then(|v| match v.as_str() {
         "pipewire" => Some(OutputBackend::PipeWire),
         "pulse" => Some(OutputBackend::PulseAudio),
         "alsa" => Some(OutputBackend::Alsa),
@@ -51,7 +51,7 @@ pub fn create() -> AppResult<Output> {
     let candidates: Vec<_> = forced.into_iter().chain(PREFERENCE).collect();
 
     for backend in candidates {
-        let Ok(sink) = gst::ElementFactory::make(backend.factory()).name("fermata-output").build() else {
+        let Ok(sink) = gst::ElementFactory::make(backend.factory()).name("matrixplayer-output").build() else {
             continue;
         };
         describe_stream(&sink);
@@ -66,23 +66,24 @@ impl Output {
     /// as fast as they decode.
     #[cfg(test)]
     pub fn fake(sync: bool) -> Self {
-        let sink = gst::ElementFactory::make("fakesink").name("fermata-output").property("sync", sync).build().unwrap();
+        let sink =
+            gst::ElementFactory::make("fakesink").name("matrixplayer-output").property("sync", sync).build().unwrap();
         Self { sink, backend: OutputBackend::Auto }
     }
 }
 
-/// Identifies the stream to the sound server so it shows up as "Fermata" in
+/// Identifies the stream to the sound server so it shows up as "MatrixPlayer" in
 /// mixers and is routed with the music role.
 fn describe_stream(sink: &gst::Element) {
     if sink.has_property("client-name") {
-        sink.set_property("client-name", "Fermata");
+        sink.set_property("client-name", "MatrixPlayer");
     }
     if sink.has_property("stream-properties") {
         let props = gst::Structure::builder("props")
             .field("media.role", "Music")
             .field("media.category", "Playback")
-            .field("application.name", "Fermata")
-            .field("application.icon-name", "fermata")
+            .field("application.name", "MatrixPlayer")
+            .field("application.icon-name", "matrixplayer")
             .build();
         sink.set_property("stream-properties", props);
     }
