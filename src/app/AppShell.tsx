@@ -6,6 +6,7 @@ import { SidebarRail } from '@/components/shell/SidebarRail';
 import { TitleBar } from '@/components/shell/TitleBar';
 import { ContextMenuHost } from '@/components/ui/ContextMenu';
 import { DialogHost } from '@/components/ui/Dialog';
+import { DropOverlay } from '@/components/ui/DropOverlay';
 import { ToastHost } from '@/components/ui/ToastHost';
 import { TooltipHost } from '@/components/ui/TooltipHost';
 import { AmbientBackdrop } from '@/features/now-playing/AmbientBackdrop';
@@ -84,6 +85,7 @@ export function AppShell() {
       <DialogHost />
       <ContextMenuHost />
       <TooltipHost />
+      <DropOverlay />
     </div>
   );
 }
