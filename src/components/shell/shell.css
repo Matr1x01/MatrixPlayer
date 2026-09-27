@@ -171,4 +171,11 @@
     padding: 0;
     justify-content: center;
   }
+  /* Short windows (down to the 620 px minimum, minus the player bar): a
+     tighter rail, so Audio / DSP and Settings stay on screen. */
+  @media (max-height: 760px) {
+    .sb.rail { gap: 6px; padding-top: 8px; }
+    .rail-group + .rail-group { padding-top: 6px; }
+    .rail .nv { height: 28px; }
+  }
 }
