@@ -421,7 +421,16 @@ export function HomeView() {
           <section className="flex flex-col gap-1">
             <span className="cap pb-1">Most played</span>
             {mostPlayed.map((t, i) => (
-              <div key={t.id} className="top-row" role="button" tabIndex={0} style={{ ['--i' as string]: i }} onDoubleClick={() => void playTracks(mostPlayed.map((x) => x.id), 'replace', i)}>
+              <div
+                key={t.id}
+                className="top-row"
+                role="button"
+                tabIndex={0}
+                style={{ ['--i' as string]: i }}
+                onDoubleClick={() => void playTracks(mostPlayed.map((x) => x.id), 'replace', i)}
+                onKeyDown={(e) => e.key === 'Enter' && void playTracks(mostPlayed.map((x) => x.id), 'replace', i)}
+                onContextMenu={contextMenu(() => trackMenu([t.id], [t], { play: () => void playTracks(mostPlayed.map((x) => x.id), 'replace', i) }).items, { label: 'Track actions' })}
+              >
                 <span className="mono t3 text-right text-[11px]">{i + 1}</span>
                 <Artwork artworkId={t.artworkId} size={36} radius={3} title={t.album ?? t.title} />
                 <span className="flex min-w-0 flex-col">
