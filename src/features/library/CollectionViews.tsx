@@ -178,7 +178,7 @@ function playlistMenu(p: PlaylistRow): MenuItem[] {
   return [
     { label: 'Play', icon: 'play', filledIcon: true, disabled: !p.trackCount, onSelect: () => void playScope({ kind: 'playlist', id: p.id }) },
     { label: 'Shuffle', icon: 'shuffle', disabled: !p.trackCount, onSelect: () => void playScope({ kind: 'playlist', id: p.id }, 'replace', true) },
-    { label: 'Add to queue', icon: 'queue', disabled: !p.trackCount, onSelect: () => void playScope({ kind: 'playlist', id: p.id }, 'append') },
+    { label: 'Add to queue', icon: 'queue', disabled: !p.trackCount, onSelect: () => void playScope({ kind: 'playlist', id: p.id }, 'append', undefined, p.name) },
     'separator',
     { label: p.pinned ? 'Unpin from sidebar' : 'Pin to sidebar', icon: 'side', onSelect: () => void run(playlistApi.setPinned(p.id, !p.pinned)) },
     { label: 'Rename…', icon: 'edit', onSelect: () => void renamePlaylist(p) },

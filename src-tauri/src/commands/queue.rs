@@ -29,6 +29,12 @@ pub async fn queue_clear(state: State<'_, AppState>) -> AppResult<()> {
     state.player.command(PlayerCommand::ClearQueue).await
 }
 
+/// Puts back the queue from before the last replace or clear.
+#[tauri::command]
+pub async fn queue_undo(state: State<'_, AppState>) -> AppResult<()> {
+    state.player.command(PlayerCommand::UndoQueue).await
+}
+
 /// Keeps only the playing track.
 #[tauri::command]
 pub async fn queue_clear_others(state: State<'_, AppState>) -> AppResult<()> {

@@ -66,8 +66,8 @@ export function trackMenu(ids: number[], rows: TrackRow[], options: TrackMenuOpt
 
   const items: MenuItem[] = [
     { label: 'Play', icon: 'play', filledIcon: true, shortcut: 'Enter', onSelect: () => void playTracks(ids) },
-    { label: 'Play next', icon: 'playNext', shortcut: 'Shift+Enter', onSelect: () => void playTracks(ids, 'next') },
-    { label: 'Add to queue', icon: 'queue', shortcut: 'Q', onSelect: () => void playTracks(ids, 'append') },
+    { label: 'Play next', icon: 'playNext', shortcut: 'Shift+Enter', onSelect: () => void playTracks(ids, 'next', undefined, single?.title) },
+    { label: 'Add to queue', icon: 'queue', shortcut: 'Q', onSelect: () => void playTracks(ids, 'append', undefined, single?.title) },
     ...(options.extra ?? []),
     'separator',
     { label: 'Add to playlist', icon: 'playlist', submenu: playlistSubmenu(ids) },

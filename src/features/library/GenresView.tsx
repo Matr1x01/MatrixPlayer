@@ -27,7 +27,7 @@ function genreMenu(genre: GenreRow): MenuItem[] {
   return [
     { label: 'Play', icon: 'play', filledIcon: true, onSelect: () => void playScope(scope) },
     { label: 'Shuffle', icon: 'shuffle', onSelect: () => void playScope(scope, 'replace', true) },
-    { label: 'Add to queue', icon: 'queue', onSelect: () => void playScope(scope, 'append') },
+    { label: 'Add to queue', icon: 'queue', onSelect: () => void playScope(scope, 'append', undefined, genre.name) },
     'separator',
     { label: 'Add to playlist', icon: 'playlist', submenu: playlistSubmenu(() => scopeTrackIds(scope)) },
   ];

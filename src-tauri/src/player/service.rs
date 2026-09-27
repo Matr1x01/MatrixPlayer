@@ -122,6 +122,9 @@ pub enum PlayerCommand {
         position: Duration,
     },
     ClearQueue,
+    /// Puts back the queue as it was before the last time it was replaced
+    /// or cleared, at the same track and position.
+    UndoQueue,
 }
 
 /// Messages the service sends itself from timers.
@@ -217,6 +220,13 @@ struct SkipRun {
     changed: bool,
 }
 
+/// The queue before it was replaced or cleared, for [`PlayerCommand::UndoQueue`].
+struct Undo {
+    queue: Queue,
+    position: Duration,
+    intent: Intent,
+}
+
 struct Player {
     engine: AudioEngine,
     dsp: Arc<DspControl>,
@@ -254,6 +264,7 @@ struct Player {
     /// a queue in which nothing is playable.
     failures: usize,
     direction: Direction,
+    undo: Option<Undo>,
     decoded: Option<StreamFormat>,
     output: Option<StreamFormat>,
 }
@@ -296,6 +307,7 @@ impl Player {
             error: None,
             failures: 0,
             direction: Direction::Forward,
+            undo: None,
             decoded: None,
             output: None,
         };
@@ -416,6 +428,7 @@ impl Player {
                 Ok(())
             }
             PlayerCommand::Restore { tracks, start, position } => {
+                self.save_undo();
                 self.queue.insert(tracks, InsertMode::Replace, start);
                 self.emit_queue();
                 self.failures = 0;
@@ -430,6 +443,7 @@ impl Player {
                 Ok(())
             }
             PlayerCommand::ClearQueue => {
+                self.save_undo();
                 self.queue.clear();
                 self.engine.stop()?;
                 self.engine_state = EngineState::Ready;
@@ -445,6 +459,45 @@ impl Player {
                 self.refresh_status();
                 Ok(())
             }
+            PlayerCommand::UndoQueue => self.undo(),
+        }
+    }
+
+    /// Keeps the queue as it is now, so a replace or clear can be undone.
+    fn save_undo(&mut self) {
+        if self.queue.len() == 0 {
+            return;
+        }
+        let position = if self.loading { self.position } else { self.engine.position().unwrap_or(self.position) };
+        self.undo = Some(Undo { queue: self.queue.clone(), position, intent: self.intent });
+    }
+
+    fn undo(&mut self) -> AppResult<()> {
+        let Undo { mut queue, position, intent } =
+            self.undo.take().ok_or_else(|| AppError::InvalidArgument("there is nothing to undo".into()))?;
+        // Modes are the user's current choice, not part of what is undone.
+        queue.set_repeat(self.queue.repeat());
+        queue.set_shuffle(self.queue.shuffle());
+        self.queue = queue;
+        self.emit_queue();
+        self.failures = 0;
+        self.direction = Direction::Forward;
+        if self.queue.current().is_none() {
+            return Ok(());
+        }
+        let resume_at = (position > Duration::from_secs(1)).then_some(position);
+        match intent {
+            Intent::Stop => {
+                self.intent = Intent::Stop;
+                self.engine.stop()?;
+                self.engine_state = EngineState::Ready;
+                self.switch_to_current()
+            }
+            Intent::Pause => self.load_current_at(false, resume_at.map(|p| (p, false))),
+            Intent::Play => match resume_at {
+                Some(p) => self.load_current_at(false, Some((p, true))),
+                None => self.load_current(true),
+            },
         }
     }
 
@@ -613,6 +666,9 @@ impl Player {
 
     fn insert(&mut self, tracks: Vec<Arc<TrackInfo>>, mode: InsertMode, start: usize) -> AppResult<()> {
         let had_current = self.queue.current().is_some();
+        if mode == InsertMode::Replace && !tracks.is_empty() {
+            self.save_undo();
+        }
         self.queue.insert(tracks, mode, start);
         self.emit_queue();
         if mode == InsertMode::Replace || !had_current {
@@ -1338,6 +1394,34 @@ mod tests {
         wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
         let snapshot = h.player.snapshot().await.unwrap();
         assert_eq!(snapshot.track.unwrap().metadata.title, "First", "previous keeps going back");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replacing_the_queue_can_be_undone() {
+        let mut h = harness().await;
+        let (a, b, c) = (h.dir.path().join("a.flac"), h.dir.path().join("b.flac"), h.dir.path().join("c.flac"));
+        write_flac(&a, 4.0, "First");
+        write_flac(&b, 4.0, "Second");
+        write_flac(&c, 4.0, "Other");
+        h.open(vec![a, b]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        h.open(vec![c]).await;
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Track { track: Some(t) } if t.metadata.title == "Other"))
+            .await;
+        h.player.command(PlayerCommand::UndoQueue).await.unwrap();
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        let snapshot = h.player.snapshot().await.unwrap();
+        let titles: Vec<_> = snapshot.queue.entries.iter().map(|e| e.track.metadata.title.as_str()).collect();
+        assert_eq!(titles, ["First", "Second"]);
+        assert_eq!(snapshot.track.unwrap().metadata.title, "First");
+        assert!(h.player.command(PlayerCommand::UndoQueue).await.is_err(), "undo is used up");
+
+        h.player.command(PlayerCommand::ClearQueue).await.unwrap();
+        assert_eq!(h.player.snapshot().await.unwrap().queue.entries.len(), 0);
+        h.player.command(PlayerCommand::UndoQueue).await.unwrap();
+        assert_eq!(h.player.snapshot().await.unwrap().queue.entries.len(), 2, "a cleared queue comes back");
     }
 
     #[tokio::test(flavor = "multi_thread")]

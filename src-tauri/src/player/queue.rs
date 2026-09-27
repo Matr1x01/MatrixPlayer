@@ -51,7 +51,7 @@ pub enum InsertMode {
     Append,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Queue {
     entries: Vec<QueueEntry>,
     /// Play order as indices into `entries`.

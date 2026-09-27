@@ -100,6 +100,7 @@ pub fn run() {
             commands::queue::queue_remove_entry,
             commands::queue::queue_clear,
             commands::queue::queue_clear_others,
+            commands::queue::queue_undo,
             commands::queue::queue_move,
             commands::queue::queue_saved_session,
             commands::queue::queue_restore_session,

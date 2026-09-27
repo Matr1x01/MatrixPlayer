@@ -17,7 +17,19 @@ export function ToastHost() {
             <span>{toast.message}</span>
             {toast.detail && <span className="el mono t3 text-[10.5px]">{toast.detail}</span>}
           </span>
-          <button type="button" className="btn gh sm ml-auto px-1.5" onClick={() => dismiss(toast.id)} aria-label="Dismiss">
+          {toast.action && (
+            <button
+              type="button"
+              className="btn sm ml-auto flex-none"
+              onClick={() => {
+                dismiss(toast.id);
+                toast.action!.run();
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
+          <button type="button" className={toast.action ? 'btn gh sm px-1.5' : 'btn gh sm ml-auto px-1.5'} onClick={() => dismiss(toast.id)} aria-label="Dismiss">
             <Icon name="x" size={13} />
           </button>
         </div>

@@ -8,6 +8,8 @@ export interface Toast {
   message: string;
   /** Secondary line, e.g. the file an error refers to. */
   detail?: string;
+  /** A button on the toast, such as Undo. */
+  action?: { label: string; run: () => void };
 }
 
 interface ToastStore {
@@ -16,6 +18,8 @@ interface ToastStore {
 }
 
 const LIFETIME_MS: Record<ToastTone, number> = { info: 3500, error: 7000 };
+/** Long enough to read the message and reach for the button. */
+const ACTION_LIFETIME_MS = 9000;
 const MAX_VISIBLE = 3;
 let nextId = 1;
 
@@ -27,7 +31,7 @@ export const useToasts = create<ToastStore>()((set) => ({
 export function showToast(toast: Omit<Toast, 'id'>) {
   const id = nextId++;
   useToasts.setState((s) => ({ toasts: [...s.toasts, { ...toast, id }].slice(-MAX_VISIBLE) }));
-  window.setTimeout(() => useToasts.getState().dismiss(id), LIFETIME_MS[toast.tone]);
+  window.setTimeout(() => useToasts.getState().dismiss(id), toast.action ? ACTION_LIFETIME_MS : LIFETIME_MS[toast.tone]);
 }
 
 /** Extracts a readable message from a rejected command. */

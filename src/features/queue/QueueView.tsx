@@ -9,7 +9,7 @@ import { IconButton } from '@/components/ui/IconButton';
 import { contextMenu, type MenuItem } from '@/components/ui/ContextMenu';
 import { askText } from '@/components/ui/Dialog';
 import { Segmented } from '@/components/ui/Segmented';
-import { playScope } from '@/features/library/actions';
+import { clearQueue, playScope } from '@/features/library/actions';
 import { playlistSubmenu } from '@/features/library/trackMenu';
 import { openFiles, openFolder } from '@/features/library/openActions';
 import { beforeId, useDragReorder } from '@/hooks/useDragReorder';
@@ -343,7 +343,7 @@ export function QueueView() {
               <Icon name="playlist" size={15} />
               Save as playlist
             </button>
-            <button type="button" className="btn gh" disabled={total === 0} onClick={() => void run(queueApi.clear())}>
+            <button type="button" className="btn gh" disabled={total === 0} onClick={() => void clearQueue()}>
               <Icon name="trash" size={15} />
               Clear
             </button>

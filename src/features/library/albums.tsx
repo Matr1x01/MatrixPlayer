@@ -26,8 +26,8 @@ export function albumMenu(album: AlbumRow): MenuItem[] {
   return [
     { label: 'Play', icon: 'play', filledIcon: true, onSelect: () => void playScope(scope) },
     { label: 'Shuffle', icon: 'shuffle', onSelect: () => void playScope(scope, 'replace', true) },
-    { label: 'Play next', icon: 'playNext', onSelect: () => void playScope(scope, 'next') },
-    { label: 'Add to queue', icon: 'queue', onSelect: () => void playScope(scope, 'append') },
+    { label: 'Play next', icon: 'playNext', onSelect: () => void playScope(scope, 'next', undefined, album.title) },
+    { label: 'Add to queue', icon: 'queue', onSelect: () => void playScope(scope, 'append', undefined, album.title) },
     'separator',
     { label: 'Add to playlist', icon: 'playlist', submenu: playlistSubmenu(() => scopeTrackIds(scope)) },
     { label: 'Add to favorites', icon: 'heart', onSelect: withIds((ids) => void setFavorite(ids, true)) },
@@ -96,7 +96,7 @@ export const AlbumTile = memo(function AlbumTile({ album, playing, paused, subti
               data-tip="Add to queue"
               onClick={(e) => {
                 e.stopPropagation();
-                void playScope({ kind: 'album', id: album.id }, 'append');
+                void playScope({ kind: 'album', id: album.id }, 'append', undefined, album.title);
               }}
             >
               <Icon name="playNext" size={16} />

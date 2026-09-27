@@ -350,6 +350,7 @@ export function TrackTable({
     };
     const chosen = positions(focus ?? undefined);
     const chosenIds = chosen.map((i) => ids[i]!).filter((id) => id != null);
+    const chosenLabel = chosenIds.length === 1 ? rows.get(chosenIds[0]!)?.title : undefined;
     const page = Math.max(1, Math.floor((list.ref.current?.clientHeight ?? 400) / rowHeight) - 1);
     let handled = true;
     switch (e.key) {
@@ -383,15 +384,15 @@ export function TrackTable({
         move(ids.length - 1);
         break;
       case 'Enter':
-        if (e.shiftKey) void playTracks(chosenIds, 'next');
-        else if (e.ctrlKey) void playTracks(chosenIds, 'append');
+        if (e.shiftKey) void playTracks(chosenIds, 'next', undefined, chosenLabel);
+        else if (e.ctrlKey) void playTracks(chosenIds, 'append', undefined, chosenLabel);
         else if (chosen.length > 1) void playTracks(chosenIds);
         else if (focus != null) play(focus);
         break;
       case 'q':
       case 'Q':
         if (e.ctrlKey || e.altKey) handled = false;
-        else void playTracks(chosenIds, 'append');
+        else void playTracks(chosenIds, 'append', undefined, chosenLabel);
         break;
       case 'l':
       case 'L':
