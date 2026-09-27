@@ -23,6 +23,18 @@
     text-overflow: ellipsis;
     min-width: 0;
   }
+  /* Ellipsis at the start, for paths, whose end is what tells them apart.
+     Wrap the text in <bdi> so it keeps its left-to-right order. */
+  .el-start {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    direction: rtl;
+    text-align: left;
+  }
+  .el-start > bdi { direction: ltr; unicode-bidi: isolate; }
   .page-title {
     font-size: 26px;
     font-weight: 700;

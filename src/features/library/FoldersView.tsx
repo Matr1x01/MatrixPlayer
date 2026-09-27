@@ -116,11 +116,15 @@ function FolderTree({ roots, selected, crumbs }: { roots: RootInfo[]; selected: 
       {roots.map((root) => (
         <div key={root.id} className="flex flex-col gap-px">
           <div className="flex items-center justify-between px-2 pb-1.5">
-            <span className="cap flex items-center gap-1.5">
-              <span className="dot" style={{ background: root.online ? 'var(--ok)' : 'var(--warn)' }} />
-              {root.display}
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="dot flex-none" style={{ background: root.online ? 'var(--ok)' : 'var(--warn)' }} />
+              {/* A path, so shown as typed (not as an uppercase caption) and
+                  cut at the start, keeping the folder's own name. */}
+              <span className="el-start mono t2 text-[11px] font-semibold" data-tip={root.display} data-tip-overflow="">
+                <bdi>{root.display}</bdi>
+              </span>
             </span>
-            <span className="mono t3 text-[9.5px]">{root.online ? formatSize(root.totalSize) : 'offline'}</span>
+            <span className="mono t3 flex-none whitespace-nowrap pl-2 text-[9.5px]">{root.online ? formatSize(root.totalSize) : 'offline'}</span>
           </div>
           {root.folderId != null &&
             children
@@ -232,8 +236,11 @@ function Contents({ folder, showFiles }: { folder: FolderDetail; showFiles: bool
 }
 
 function Details({ folder }: { folder: FolderDetail }) {
-  const duration = folder.tracks.reduce((t, r) => t + r.durationMs, 0);
-  const size = folder.tracks.reduce((t, r) => t + r.fileSize, 0) + folder.otherFiles.reduce((t, f) => t + f.size, 0);
+  // Totals cover the folders below too: a library root often holds nothing
+  // but folders.
+  const duration = folder.totalDurationMs;
+  const size = folder.totalSize + folder.otherFiles.reduce((t, f) => t + f.size, 0);
+  const [sizeValue, sizeUnit] = formatSize(size).split(' ');
   const formats = useMemo(() => {
     const byBadge = new Map<string, number>();
     for (const t of folder.tracks) byBadge.set(trackBadge(t), (byBadge.get(trackBadge(t)) ?? 0) + 1);
@@ -248,12 +255,16 @@ function Details({ folder }: { folder: FolderDetail }) {
     return [...byExt].map(([ext, n]) => `${n} ${ext}`).join(' · ');
   }, [folder.otherFiles]);
   const cover = folder.otherFiles.find((f) => f.kind === 'image' && /^(cover|folder|front)\./i.test(f.name));
+  // A library root's name is its whole path; its last part names it.
+  const isPath = folder.name.includes('/');
+  const shortName = isPath ? (folder.name.split('/').filter(Boolean).pop() ?? folder.name) : folder.name;
   const n = folder.tracks.length;
+  const total = folder.totalTracks;
   const consistent = n > 0 && folder.tagged === n;
 
   return (
     <aside className="folder-aside" aria-label="Folder details">
-      <Artwork artwork={folder.artwork} full size={240} radius={5} title={folder.name}>
+      <Artwork artwork={folder.artwork} full size={240} radius={5} title={shortName}>
         {folder.artwork && (
           <span className="chip art-chip">
             {cover ? cover.name : folder.artwork.source === 'embedded' ? 'embedded' : 'cover'} · {folder.artwork.width}
@@ -262,15 +273,25 @@ function Details({ folder }: { folder: FolderDetail }) {
         )}
       </Artwork>
       <div className="flex flex-col gap-[3px]">
-        <span className="el text-[14px] font-bold">{folder.name}</span>
+        {isPath ? (
+          <span className="el-start text-[14px] font-bold" data-tip={folder.name} data-tip-overflow="">
+            <bdi>{folder.name.replace(/^\/home\/[^/]+/, '~')}</bdi>
+          </span>
+        ) : (
+          <span className="el text-[14px] font-bold">{folder.name}</span>
+        )}
         <span className="t3 text-[12px]">
           {folder.albumCount === 1 ? 'Album folder · matched to 1 album' : folder.albumCount > 1 ? `Holds ${folder.albumCount} albums` : 'Folder'}
         </span>
       </div>
       <div className="grid grid-cols-3 gap-1.5">
-        <Stat value={count(n)} label="tracks" />
-        <Stat value={count(n + folder.otherFiles.length)} label="files" />
-        <Stat value={size >= 1e9 ? (size / 1e9).toFixed(2) : (size / 1e6).toFixed(0)} label={size >= 1e9 ? 'GB' : 'MB'} />
+        <Stat value={count(total)} label={total === 1 ? 'track' : 'tracks'} />
+        {folder.subfolders.length > 0 ? (
+          <Stat value={count(folder.subfolders.length)} label={folder.subfolders.length === 1 ? 'folder' : 'folders'} />
+        ) : (
+          <Stat value={count(n + folder.otherFiles.length)} label="files" />
+        )}
+        <Stat value={sizeValue ?? '0'} label={sizeUnit ?? 'B'} />
       </div>
       <div className="mono grid grid-cols-[auto_1fr] gap-x-3 gap-y-[5px] text-[10.5px]">
         {formats && (
@@ -285,10 +306,14 @@ function Details({ folder }: { folder: FolderDetail }) {
             <span className="el">{others}</span>
           </>
         )}
-        {n > 0 && (
+        {total > 0 && (
           <>
             <span className="t3">Duration</span>
             <span>{formatLength(duration)}</span>
+          </>
+        )}
+        {n > 0 && (
+          <>
             <span className="t3">Tags</span>
             <span style={{ color: consistent ? 'var(--ok)' : 'var(--warn)' }}>
               {consistent ? 'Consistent' : 'Incomplete'} · {folder.tagged}/{n}
@@ -299,7 +324,7 @@ function Details({ folder }: { folder: FolderDetail }) {
         <span>{folder.rootOnline ? formatAgo(folder.lastScanAt) : 'drive offline'}</span>
       </div>
       <div className="mt-auto flex flex-col gap-1.5">
-        <button type="button" className="btn pri justify-center" disabled={n === 0 && folder.subfolders.length === 0} onClick={() => void playScope({ kind: 'folder', id: folder.id, recursive: true })}>
+        <button type="button" className="btn pri justify-center" disabled={total === 0} onClick={() => void playScope({ kind: 'folder', id: folder.id, recursive: true })}>
           <Icon name="play" size={15} filled />
           Play folder
         </button>
@@ -371,10 +396,16 @@ export function FoldersView({ id }: { id?: number }) {
           <Icon name="home" size={15} className="t3 mx-1 flex-none" />
           {folder &&
             [...folder.crumbs, { id: folder.id, name: folder.name }].map((c, i, all) => (
-              <span key={c.id} className="flex min-w-0 items-center">
+              <span key={c.id} className={i === all.length - 1 ? 'flex flex-none items-center' : 'flex min-w-0 items-center'}>
                 {i > 0 && <span className="t3">/</span>}
-                <button type="button" className={i === all.length - 1 ? 'crumb here' : 'crumb'} onClick={() => navigate('folders', c.id)}>
-                  {i === 0 ? home(c.name) : c.name}
+                <button
+                  type="button"
+                  className={[i === all.length - 1 ? 'crumb here' : 'crumb', i === 0 && 'el-start'].filter(Boolean).join(' ')}
+                  data-tip={i === 0 ? c.name : undefined}
+                  data-tip-overflow=""
+                  onClick={() => navigate('folders', c.id)}
+                >
+                  {i === 0 ? <bdi>{home(c.name)}</bdi> : c.name}
                 </button>
               </span>
             ))}

@@ -435,9 +435,12 @@ function buildSections(results: SearchResults | null, scope: Scope, text: string
             <Icon name="folder" size={16} />
           </span>
           <span className="flex min-w-0 flex-col">
-            <span className="el mono text-[11.5px] font-medium">
-              {f.displayPath.replace(/^\/home\/[^/]+/, '~').slice(0, -f.name.length)}
-              <Highlight text={f.name} query={q} />
+            {/* Cut at the start: the folder's own name is what matters. */}
+            <span className="el-start mono text-[11.5px] font-medium">
+              <bdi>
+                {f.displayPath.replace(/^\/home\/[^/]+/, '~').slice(0, -f.name.length)}
+                <Highlight text={f.name} query={q} />
+              </bdi>
             </span>
             <span className="el t3 text-[11.5px]">
               {plural(f.trackCount, 'file')} · {formatSize(f.totalSize)}

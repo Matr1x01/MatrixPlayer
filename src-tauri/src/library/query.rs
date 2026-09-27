@@ -757,6 +757,10 @@ pub struct FolderDetail {
     pub last_scan_at: Option<i64>,
     /// Tracks with a title, artist and album tag, out of all tracks here.
     pub tagged: i64,
+    /// Tracks, bytes and playing time in this folder and every folder below.
+    pub total_tracks: i64,
+    pub total_size: i64,
+    pub total_duration_ms: i64,
 }
 
 pub async fn folder(db: &Database, id: i64) -> AppResult<FolderDetail> {
@@ -792,6 +796,16 @@ pub async fn folder(db: &Database, id: i64) -> AppResult<FolderDetail> {
     .bind(id)
     .fetch_one(db.pool())
     .await?;
+    let (total_tracks, total_size, total_duration_ms): (i64, i64, i64) = sqlx::query_as(
+        "WITH RECURSIVE sub(id) AS (
+            SELECT ?1 UNION ALL SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
+         )
+         SELECT COUNT(t.id), COALESCE(SUM(t.file_size), 0), COALESCE(SUM(t.duration_ms), 0)
+         FROM sub JOIN tracks t ON t.folder_id = sub.id",
+    )
+    .bind(id)
+    .fetch_one(db.pool())
+    .await?;
     let art = tracks.iter().find_map(|t| t.artwork_id.clone());
     let artwork = match art {
         Some(art) => artwork_info(db, &art).await?,
@@ -823,6 +837,9 @@ pub async fn folder(db: &Database, id: i64) -> AppResult<FolderDetail> {
         album_count,
         last_scan_at,
         tagged,
+        total_tracks,
+        total_size,
+        total_duration_ms,
     })
 }
 

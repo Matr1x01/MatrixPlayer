@@ -558,9 +558,11 @@
     overflow: hidden;
   }
   .crumb {
-    display: inline-flex;
-    align-items: center;
+    display: inline-block;
+    flex-shrink: 1;
+    min-width: 0;
     height: 26px;
+    line-height: 26px;
     padding: 0 7px;
     border-radius: 4px;
     color: var(--tx2);
@@ -572,7 +574,7 @@
     text-overflow: ellipsis;
   }
   .crumb:hover { background: var(--bg3); color: var(--tx); }
-  .crumb.here { color: var(--tx); font-weight: 600; }
+  .crumb.here { color: var(--tx); font-weight: 600; flex-shrink: 0; }
   .folder-tree {
     width: 268px;
     flex: none;
