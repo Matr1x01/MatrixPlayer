@@ -95,21 +95,16 @@ impl State {
     }
 }
 
-/// The combined response of `bands` in dB at `f`.
-pub fn response_db(bands: &[EqBand], f: f64, fs: f64) -> f64 {
-    bands.iter().map(|b| Coeffs::for_band(b, fs).magnitude_db(f, fs)).sum()
-}
-
-/// The largest boost `bands` apply anywhere in the audible range, sampled on
-/// a log grid (what "auto preamp" compensates).
-pub fn max_boost_db(bands: &[EqBand], fs: f64) -> f64 {
-    if bands.is_empty() {
+/// The largest boost the filters `coeffs` apply anywhere in the audible
+/// range, sampled on a log grid (what "auto preamp" compensates).
+pub fn max_boost_db(coeffs: &[Coeffs], fs: f64) -> f64 {
+    if coeffs.is_empty() {
         return 0.0;
     }
     (0..=240)
         .map(|i| 20.0 * 1000f64.powf(f64::from(i) / 240.0))
         .filter(|f| *f < fs / 2.0)
-        .map(|f| response_db(bands, f, fs))
+        .map(|f| coeffs.iter().map(|c| c.magnitude_db(f, fs)).sum::<f64>())
         .fold(f64::MIN, f64::max)
         .max(0.0)
 }
@@ -159,10 +154,11 @@ mod tests {
 
     #[test]
     fn max_boost_finds_the_peak_of_the_combined_curve() {
+        let coeffs = |bands: &[EqBand]| bands.iter().map(|b| Coeffs::for_band(b, FS)).collect::<Vec<_>>();
         let bands = [EqBand::peak(1000.0, 3.0, 1.0), EqBand::peak(1100.0, 2.0, 1.0), EqBand::peak(100.0, -8.0, 1.0)];
-        let boost = max_boost_db(&bands, FS);
+        let boost = max_boost_db(&coeffs(&bands), FS);
         assert!((4.8..5.0).contains(&boost), "{boost}");
-        assert_eq!(max_boost_db(&[EqBand::peak(500.0, -3.0, 1.0)], FS), 0.0);
+        assert_eq!(max_boost_db(&coeffs(&[EqBand::peak(500.0, -3.0, 1.0)]), FS), 0.0);
     }
 
     #[test]

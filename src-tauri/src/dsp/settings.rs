@@ -189,8 +189,12 @@ pub struct DspSettings {
     /// Name of the preset the active slot was loaded from, if any.
     pub preset: Option<String>,
     pub preamp_db: f64,
-    /// Lower the preamp by the EQ's largest boost, so it cannot clip.
+    /// Lower the level by the EQ's largest boost beyond
+    /// `auto_preamp_allowance_db`, the same for every track.
     pub auto_preamp: bool,
+    /// Boost the EQ may add before auto preamp lowers the level; the limiter
+    /// catches the peaks it pushes over full scale.
+    pub auto_preamp_allowance_db: f64,
     /// −1 (left) … 1 (right).
     pub balance: f64,
     /// 0 (mono) … 2 (twice as wide); 1 leaves the image alone.
@@ -218,6 +222,7 @@ impl Default for DspSettings {
             preset: Some("Flat".into()),
             preamp_db: 0.0,
             auto_preamp: true,
+            auto_preamp_allowance_db: 3.0,
             balance: 0.0,
             width: 1.0,
             crossfeed: false,
@@ -250,6 +255,7 @@ impl DspSettings {
         self.a.sanitize();
         self.b.sanitize();
         self.preamp_db = finite_or(self.preamp_db, 0.0).clamp(-24.0, MAX_GAIN_DB);
+        self.auto_preamp_allowance_db = finite_or(self.auto_preamp_allowance_db, 3.0).clamp(0.0, MAX_GAIN_DB);
         self.balance = finite_or(self.balance, 0.0).clamp(-1.0, 1.0);
         self.width = finite_or(self.width, 1.0).clamp(0.0, 2.0);
         self.replay_gain_preamp_db = finite_or(self.replay_gain_preamp_db, 0.0).clamp(-15.0, 15.0);
@@ -359,6 +365,7 @@ mod tests {
         let s: DspSettings = serde_json::from_str(r#"{"eqEnabled":true,"preampDb":-3}"#).unwrap();
         assert!(s.eq_enabled);
         assert_eq!(s.preamp_db, -3.0);
+        assert_eq!(s.auto_preamp_allowance_db, 3.0);
         assert_eq!(s.a.parametric.len(), 8);
         assert_eq!(s.replay_gain, ReplayGainMode::Album);
     }

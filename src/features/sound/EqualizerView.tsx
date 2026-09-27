@@ -12,6 +12,7 @@ import type { DspSettings, EqBand, EqCurve, EqMode, FilterKind, Preset } from '@
 
 import { CenterSlider, Fader, Knob, ValueField } from './controls';
 import {
+  DRAW_RATE,
   GRAPHIC_10,
   GRAPHIC_31,
   KIND_LABEL,
@@ -66,13 +67,15 @@ export function EqualizerView() {
   const settings = useDsp((s) => s.settings);
   const presets = useDsp((s) => s.presets);
   const limiting = useDsp((s) => s.status.limiting);
+  const sampleRate = useDsp((s) => s.status.sampleRate);
   const [selected, setSelected] = useState<number | null>(null);
   const [spectrum, setSpectrum] = useState(true);
   const [filter, setFilter] = useState('');
 
   const curve = settings ? activeCurve(settings) : null;
   const filters = useMemo(() => (curve ? curveFilters(curve) : []), [curve]);
-  const boost = useMemo(() => maxBoostDb(filters), [filters]);
+  // At the playing stream's rate, as the core computes it.
+  const boost = useMemo(() => maxBoostDb(filters, sampleRate || DRAW_RATE), [filters, sampleRate]);
 
   if (!settings || !curve) {
     return (
@@ -88,8 +91,10 @@ export function EqualizerView() {
   }
 
   const active = settings.eqEnabled && !settings.bypass;
-  const preamp = settings.preampDb - (settings.autoPreamp ? boost : 0);
-  const mayClip = active && boost + preamp > 0.05;
+  const allowance = settings.autoPreamp ? settings.autoPreampAllowanceDb : 0;
+  const preamp = settings.preampDb - (settings.autoPreamp ? Math.max(0, boost - allowance) : 0);
+  // Peaks the allowance lets through are the limiter's by design.
+  const mayClip = active && boost + preamp > allowance + 0.05;
   const preset = presets.find((p) => p.name === settings.preset);
   const modified = preset ? !sameCurve(preset.curve, curve) : false;
   const bandSel = selected != null && selected < (curve.mode === 'parametric' ? curve.parametric.length : 99) ? selected : null;
@@ -417,7 +422,11 @@ export function EqualizerView() {
               <label className="flex items-center justify-between gap-2.5">
                 <span className="flex flex-col gap-px">
                   <span className="font-semibold">Auto preamp</span>
-                  <span className="t3 text-[11.5px]">Keeps peak boost below 0 dBFS</span>
+                  <span className="t3 text-[11.5px]">
+                    {settings.autoPreampAllowanceDb > 0
+                      ? `Lowers the level for boosts over ${formatGain(settings.autoPreampAllowanceDb)}`
+                      : 'Keeps peak boost below 0 dBFS'}
+                  </span>
                 </span>
                 <Toggle on={settings.autoPreamp} onChange={(autoPreamp) => patchDsp({ autoPreamp })} label="Auto preamp" />
               </label>

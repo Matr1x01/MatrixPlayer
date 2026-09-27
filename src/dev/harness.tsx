@@ -162,6 +162,7 @@ const dspSettings: DspSettings = {
   preset: 'Warm Headphone',
   preampDb: 0,
   autoPreamp: true,
+  autoPreampAllowanceDb: 3,
   balance: 0,
   width: 1.15,
   crossfeed: false,

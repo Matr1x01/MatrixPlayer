@@ -352,6 +352,29 @@ export function DspView() {
                     label="Clipping prevention"
                   />
                 </Setting>
+                <Setting
+                  column
+                  title="EQ boost allowance"
+                  hint="Boost auto preamp lets through before lowering the level; the limiter catches the peaks"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <CenterSlider
+                        label="EQ boost allowance"
+                        disabled={!settings.autoPreamp}
+                        value={settings.autoPreampAllowanceDb}
+                        min={0}
+                        max={12}
+                        center={0}
+                        step={0.5}
+                        reset={3}
+                        valueText={formatGain(settings.autoPreampAllowanceDb)}
+                        onChange={(v) => patchDsp({ autoPreampAllowanceDb: Math.round(v * 10) / 10 })}
+                      />
+                    </div>
+                    <span className="mono w-[60px] text-right text-[11.5px]">{formatGain(settings.autoPreampAllowanceDb)}</span>
+                  </div>
+                </Setting>
                 <Setting title="Soft fade on pause & seek" hint="120 ms ramp, avoids clicks">
                   <Toggle on={settings.softFades} onChange={(softFades) => patchDsp({ softFades })} label="Soft fade" />
                 </Setting>

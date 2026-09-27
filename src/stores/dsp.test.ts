@@ -27,6 +27,7 @@ const settings: DspSettings = {
   preset: 'Flat',
   preampDb: 0,
   autoPreamp: true,
+  autoPreampAllowanceDb: 3,
   balance: 0,
   width: 1,
   crossfeed: false,

@@ -17,7 +17,7 @@ use gstreamer as gst;
 use serde::Serialize;
 
 use super::analysis::AnalysisTap;
-use super::biquad::{Coeffs, State};
+use super::biquad::{Coeffs, State, max_boost_db};
 use super::settings::{EqBand, ReplayGainMode};
 
 /// Samples above this are pulled down by the limiter (−0.1 dBFS).
@@ -35,6 +35,9 @@ pub const FADE_S: f64 = 0.12;
 pub struct Params {
     pub filters: Vec<EqBand>,
     pub preamp_db: f64,
+    /// With auto preamp on, the EQ boost allowed before the level is lowered
+    /// by the rest of the boost.
+    pub auto_preamp_allowance_db: Option<f64>,
     pub balance: f64,
     pub width: f64,
     pub crossfeed: bool,
@@ -51,6 +54,7 @@ impl Default for Params {
         Self {
             filters: Vec::new(),
             preamp_db: 0.0,
+            auto_preamp_allowance_db: None,
             balance: 0.0,
             width: 1.0,
             crossfeed: false,
@@ -158,6 +162,8 @@ pub struct Processor {
     rate: f64,
     channels: usize,
     coeffs: Vec<Coeffs>,
+    /// The largest boost of the EQ curve at the stream's rate.
+    max_boost_db: f64,
     /// `states[band * channels + channel]`
     states: Vec<State>,
     rg: RgTags,
@@ -185,6 +191,7 @@ impl Processor {
             rate: 48_000.0,
             channels: 2,
             coeffs: Vec::new(),
+            max_boost_db: 0.0,
             states: Vec::new(),
             rg: RgTags::default(),
             gain_target: 1.0,
@@ -211,6 +218,7 @@ impl Processor {
         self.status.sample_rate = rate;
         self.status.channels = channels;
         self.rebuild();
+        self.update_gain();
     }
 
     /// A new stream began (a new track, possibly gaplessly): its tags will
@@ -412,6 +420,7 @@ impl Processor {
     fn rebuild(&mut self) {
         let old_bands = self.coeffs.len();
         self.coeffs = self.params.filters.iter().map(|b| Coeffs::for_band(b, self.rate)).collect();
+        self.max_boost_db = max_boost_db(&self.coeffs, self.rate);
         // Keep filter memories when only coefficients change, so dragging a
         // band does not click; reset them when the layout changes.
         if old_bands != self.coeffs.len() || self.states.len() != self.coeffs.len() * self.channels {
@@ -447,7 +456,10 @@ impl Processor {
         {
             rg_linear = 1.0 / peak;
         }
-        self.gain_target = rg_linear * db_to_linear(p.preamp_db);
+        // Auto preamp takes back only the boost beyond the allowance, and
+        // the same for every track, so ReplayGain's levels stay matched.
+        let auto_db = p.auto_preamp_allowance_db.map_or(0.0, |allowance| (self.max_boost_db - allowance).max(0.0));
+        self.gain_target = rg_linear * db_to_linear(p.preamp_db - auto_db);
         self.status.replay_gain_source = source;
         self.status.replay_gain_db = linear_to_db(rg_linear);
     }
@@ -555,6 +567,70 @@ mod tests {
         let mut samples = vec![0.4, 0.4];
         p.process(&mut samples, None);
         assert_eq!(samples, [0.0, 0.4]);
+    }
+
+    /// Steady-state gain (dB) the processor applies to a 1 kHz sine.
+    fn gain_at_1k(params: Params) -> f64 {
+        let mut p = processor(params);
+        let mut samples: Vec<f64> = (0..48_000)
+            .flat_map(|n| {
+                let v = 0.1 * (2.0 * std::f64::consts::PI * 1000.0 * n as f64 / 48_000.0).sin();
+                [v, v]
+            })
+            .collect();
+        p.process(&mut samples, None);
+        let tail_peak = samples[48_000..].iter().fold(0.0f64, |m, s| m.max(s.abs()));
+        linear_to_db(tail_peak / 0.1)
+    }
+
+    #[test]
+    fn auto_preamp_lowers_the_level_only_beyond_its_allowance() {
+        use crate::dsp::settings::EqBand;
+        let boost = |db| Params {
+            filters: vec![EqBand::peak(1000.0, db, 1.0)],
+            auto_preamp_allowance_db: Some(3.0),
+            ..Params::default()
+        };
+        let measured = gain_at_1k(boost(2.0));
+        assert!((measured - 2.0).abs() < 0.05, "a boost within the allowance is heard in full: {measured}");
+        let measured = gain_at_1k(boost(8.0));
+        assert!((measured - 3.0).abs() < 0.05, "the rest of the boost is taken back: {measured}");
+        let off = Params { auto_preamp_allowance_db: None, ..boost(8.0) };
+        let measured = gain_at_1k(off);
+        assert!((measured - 8.0).abs() < 0.05, "without auto preamp: {measured}");
+        let strict = Params { auto_preamp_allowance_db: Some(0.0), ..boost(8.0) };
+        let measured = gain_at_1k(strict);
+        assert!(measured.abs() < 0.05, "no allowance keeps the peak at unity: {measured}");
+    }
+
+    #[test]
+    fn auto_preamp_is_the_same_for_every_track() {
+        gst::init().unwrap();
+        use crate::dsp::settings::EqBand;
+        let mut p = processor(Params {
+            filters: vec![EqBand::peak(1000.0, 8.0, 1.0)],
+            auto_preamp_allowance_db: Some(3.0),
+            replay_gain: ReplayGainMode::Track,
+            ..Params::default()
+        });
+        let with_tags = |gain: f64, peak: f64| {
+            let mut tags = gst::TagList::new();
+            {
+                let tags = tags.get_mut().unwrap();
+                tags.add::<gst::tags::TrackGain>(&gain, gst::TagMergeMode::Append);
+                tags.add::<gst::tags::TrackPeak>(&peak, gst::TagMergeMode::Append);
+            }
+            tags
+        };
+        p.process(&mut [0.0, 0.0], None);
+        // Tracks with different gains and peaks lose the same 5 dB.
+        p.tags(&with_tags(-9.0, 1.0));
+        let loud = linear_to_db(p.gain_target);
+        p.stream_start();
+        p.tags(&with_tags(-1.0, 0.5));
+        let dynamic = linear_to_db(p.gain_target);
+        assert!((loud - (-9.0 - 5.0)).abs() < 0.01, "{loud}");
+        assert!((dynamic - (-1.0 - 5.0)).abs() < 0.01, "{dynamic}");
     }
 
     #[test]

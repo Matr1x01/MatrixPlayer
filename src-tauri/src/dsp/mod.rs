@@ -183,16 +183,11 @@ pub struct DspControl {
 impl DspControl {
     /// Applies validated settings to the running chain.
     pub fn apply(&self, settings: &DspSettings) {
-        let filters = if settings.eq_active() { settings.curve().filters() } else { Vec::new() };
-        let preamp_db = if settings.eq_active() {
-            let auto = if settings.auto_preamp { -biquad::max_boost_db(&filters, 48_000.0) } else { 0.0 };
-            settings.preamp_db + auto
-        } else {
-            0.0
-        };
+        let active = settings.eq_active();
         self.shared.set_params(Params {
-            filters,
-            preamp_db,
+            filters: if active { settings.curve().filters() } else { Vec::new() },
+            preamp_db: if active { settings.preamp_db } else { 0.0 },
+            auto_preamp_allowance_db: (active && settings.auto_preamp).then_some(settings.auto_preamp_allowance_db),
             balance: settings.balance,
             width: settings.width,
             crossfeed: settings.crossfeed,

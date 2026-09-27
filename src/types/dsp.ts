@@ -44,6 +44,8 @@ export interface DspSettings {
   preset: string | null;
   preampDb: number;
   autoPreamp: boolean;
+  /** EQ boost allowed before auto preamp lowers the level; the limiter catches the rest. */
+  autoPreampAllowanceDb: number;
   /** −1 (left) … 1 (right). */
   balance: number;
   /** 0 (mono) … 2; 1 leaves the stereo image alone. */
