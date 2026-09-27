@@ -199,11 +199,32 @@ fn setup(app: &AppHandle) -> Result<(), error::AppError> {
     app.manage(AppState { player, library, artwork, dsp, waveforms, db });
 
     // Files on the command line play; transport flags only matter to an
-    // instance that is already running.
+    // instance that is already running. Otherwise the last session comes
+    // back, paused where it was, unless that is turned off.
     if let desktop::Invocation::Open(files) = desktop::parse_args(std::env::args().skip(1)) {
         queue_paths(app, files, InsertMode::Replace);
+    } else {
+        restore_last_session(app);
     }
     Ok(())
+}
+
+/// Brings back the queue saved when the app last closed, if the preference
+/// allows it and there is one.
+fn restore_last_session(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let enabled = preferences::load(&state.db).await.map(|p| p.restore_session).unwrap_or(true);
+        if !enabled {
+            return;
+        }
+        match commands::queue::restore_session(&state).await {
+            Ok(count) => log::info!("restored the last session ({count} tracks)"),
+            Err(error::AppError::NotFound(_)) => {}
+            Err(e) => log::warn!("could not restore the last session: {e}"),
+        }
+    });
 }
 
 /// Acts on the arguments of a second launch.

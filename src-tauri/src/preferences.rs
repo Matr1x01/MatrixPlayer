@@ -68,6 +68,8 @@ pub struct UiPreferences {
     /// Announce each new track with a desktop notification (while the
     /// window is in the background).
     pub track_notifications: bool,
+    /// At startup, bring back the last queue, paused where it was.
+    pub restore_session: bool,
 }
 
 /// Allowed range for [`UiPreferences::interface_scale`] (Settings board).
@@ -84,6 +86,7 @@ impl Default for UiPreferences {
             reduce_motion: false,
             interface_scale: 1.0,
             track_notifications: true,
+            restore_session: true,
         }
     }
 }
@@ -101,6 +104,7 @@ pub struct UiPreferencesPatch {
     pub reduce_motion: Option<bool>,
     pub interface_scale: Option<f64>,
     pub track_notifications: Option<bool>,
+    pub restore_session: Option<bool>,
 }
 
 /// Distinguishes a field sent as `null` (`Some(None)`) from one not sent at
@@ -152,6 +156,10 @@ pub async fn update(db: &Database, patch: UiPreferencesPatch) -> AppResult<UiPre
     if let Some(on) = patch.track_notifications {
         prefs.track_notifications = on;
         settings::set(db, "ui.trackNotifications", &on).await?;
+    }
+    if let Some(on) = patch.restore_session {
+        prefs.restore_session = on;
+        settings::set(db, "ui.restoreSession", &on).await?;
     }
     if let Some(scale) = patch.interface_scale {
         if !SCALE_RANGE.contains(&scale) {

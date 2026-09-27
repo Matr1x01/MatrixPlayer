@@ -46,10 +46,17 @@ const SECTIONS: { id: Section; label: string; icon: IconName }[] = [
   { id: 'about', label: 'About', icon: 'info' },
 ];
 
-/** What each not-yet-configurable section will hold, stated plainly. */
-const PENDING: Partial<Record<Section, string>> = {
-  general: 'Startup behaviour will live here. The last queue can be restored from the Queue view.',
-};
+function GeneralSettings() {
+  const prefs = usePreferences((s) => s.prefs);
+  return (
+    <SettingRow title="Startup" hint="What MatrixPlayer opens with">
+      <label className="flex items-center gap-2.5">
+        <Toggle on={prefs.restoreSession} onChange={(restoreSession) => void updatePreferences({ restoreSession })} label="Resume the last session" />
+        Resume the last session, paused where it was
+      </label>
+    </SettingRow>
+  );
+}
 
 function PlaybackSettings() {
   const gapless = usePlayer((s) => s.queue.gapless);
@@ -229,7 +236,7 @@ function About({ info }: { info: AppInfo | null }) {
 
 export function SettingsView({ initial }: { initial?: string }) {
   const [section, setSection] = useState<Section>(
-    SECTIONS.some((s) => s.id === initial) ? (initial as Section) : 'appearance',
+    SECTIONS.some((s) => s.id === initial) ? (initial as Section) : 'general',
   );
   const [info, setInfo] = useState<AppInfo | null>(null);
   useEffect(() => {
@@ -257,6 +264,7 @@ export function SettingsView({ initial }: { initial?: string }) {
             <span className="cap">Settings</span>
             <h1 className="page-title">{current.label}</h1>
           </div>
+          {section === 'general' && <GeneralSettings />}
           {section === 'appearance' && <AppearanceSettings />}
           {section === 'library' && <LibrarySettings />}
           {section === 'playback' && <PlaybackSettings />}
@@ -267,7 +275,6 @@ export function SettingsView({ initial }: { initial?: string }) {
           {section === 'desktop' && <DesktopSettings />}
           {section === 'shortcuts' && <ShortcutSettings />}
           {section === 'about' && <About info={info} />}
-          {PENDING[section] && <p className="t3 border-t border-ln pt-3.5 text-[12.5px]">{PENDING[section]}</p>}
         </div>
         {section === 'appearance' ? <SettingsPreview /> : <div />}
       </main>

@@ -129,6 +129,7 @@ const prefs: UiPreferences = {
   reduceMotion: false,
   interfaceScale: 1,
   trackNotifications: true,
+  restoreSession: true,
 };
 
 // The Equalizer board's "Warm Headphone" curve.

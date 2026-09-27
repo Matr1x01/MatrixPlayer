@@ -23,6 +23,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   reduceMotion: false,
   interfaceScale: 1,
   trackNotifications: true,
+  restoreSession: true,
 };
 
 export const usePreferences = create<PreferencesStore>()(() => ({
