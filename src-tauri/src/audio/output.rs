@@ -9,6 +9,8 @@
 //! open. With no device chosen, the sound server's default is followed,
 //! including when the user switches it elsewhere.
 
+use std::sync::Mutex;
+
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use serde::Serialize;
@@ -143,7 +145,7 @@ pub fn devices(backend: OutputBackend) -> Vec<OutputDevice> {
 }
 
 fn provider_devices(backend: OutputBackend) -> Vec<(OutputDevice, gst::Device)> {
-    let Some(provider) = backend.device_provider().and_then(gst::DeviceProviderFactory::by_name) else {
+    let Some(provider) = provider(backend) else {
         return Vec::new();
     };
     let mut out: Vec<(OutputDevice, gst::Device)> = provider
@@ -155,6 +157,35 @@ fn provider_devices(backend: OutputBackend) -> Vec<(OutputDevice, gst::Device)> 
     out.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
     out.dedup_by(|a, b| a.0.id == b.0.id);
     out
+}
+
+/// The device provider for `backend`.
+///
+/// PipeWire's provider cannot be probed again while a stream is open: every
+/// PipeWire element in the process shares one connection, and a second probe
+/// on it waits forever for the server's reply, taking the connection's lock
+/// (and so playback) down with it. Its provider is therefore started once
+/// and kept running; a running provider answers from the devices it
+/// monitors, without probing, and follows hotplug.
+fn provider(backend: OutputBackend) -> Option<gst::DeviceProvider> {
+    static PIPEWIRE: Mutex<Option<gst::DeviceProvider>> = Mutex::new(None);
+
+    let factory = backend.device_provider()?;
+    if backend != OutputBackend::PipeWire {
+        return gst::DeviceProviderFactory::by_name(factory);
+    }
+    let mut monitor = PIPEWIRE.lock().unwrap();
+    if monitor.is_none() {
+        let provider = gst::DeviceProviderFactory::by_name(factory)?;
+        // Nobody reads the hotplug messages; the device list is what matters.
+        provider.bus().set_sync_handler(|_, _| gst::BusSyncReply::Drop);
+        if let Err(e) = provider.start() {
+            log::warn!("could not monitor {factory}: {e}");
+            return None;
+        }
+        *monitor = Some(provider);
+    }
+    monitor.clone()
 }
 
 fn open_device(backend: OutputBackend, id: &str) -> Option<(gst::Element, OutputDevice)> {

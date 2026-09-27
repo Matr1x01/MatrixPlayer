@@ -713,4 +713,35 @@ mod system_output_tests {
         assert!(switch >= Duration::from_millis(800) && switch <= Duration::from_millis(1600), "switch at {switch:?}");
         assert!(total >= Duration::from_millis(1800) && total <= Duration::from_millis(3200), "ended at {total:?}");
     }
+
+    /// Opt in with `cargo test -- --ignored` on a machine running PipeWire.
+    #[test]
+    #[ignore = "needs a running PipeWire daemon"]
+    fn lists_and_switches_pipewire_devices_while_playing() {
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.flac");
+        write_flac(&a, 6.0, "A");
+        let uri = path_to_uri(&a).unwrap();
+
+        let (tx, _rx) = unbounded_channel();
+        let out = output::create(None).unwrap();
+        assert_eq!(out.backend, output::OutputBackend::PipeWire);
+        let mut engine = AudioEngine::new(tx, out).unwrap();
+        engine.set_muted(true);
+        engine.load(&uri, None, true).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Listing twice while a stream is open used to hang for good.
+        let devices = output::devices(output::OutputBackend::PipeWire);
+        assert_eq!(output::devices(output::OutputBackend::PipeWire), devices);
+        for device in &devices {
+            let out = output::create(Some(&device.id)).unwrap();
+            assert_eq!(out.device.as_ref(), Some(device));
+            engine.set_output(out).unwrap();
+            engine.load(&uri, None, true).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            assert!(engine.position().is_some_and(|p| p > Duration::ZERO), "{} plays", device.name);
+        }
+    }
 }
