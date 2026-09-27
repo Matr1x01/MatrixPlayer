@@ -55,7 +55,7 @@ impl DspService {
     pub async fn start(db: Database, control: Arc<DspControl>) -> Arc<Self> {
         let saved: DspSettings = settings::get(&db, SETTINGS_KEY).await.ok().flatten().unwrap_or_default();
         let user: Vec<Preset> = settings::get(&db, PRESETS_KEY).await.ok().flatten().unwrap_or_default();
-        control.apply(&saved.sanitize());
+        control.apply(&saved.migrate().sanitize());
         let service = Arc::new(Self {
             control,
             db,
@@ -91,7 +91,8 @@ impl DspService {
 
     /// Applies new settings and schedules a save. Returns them as applied.
     pub fn update(&self, settings: DspSettings) -> DspSettings {
-        let settings = settings.sanitize();
+        // Whatever the UI sends is already in the current format.
+        let settings = DspSettings { version: super::settings::SETTINGS_VERSION, ..settings }.sanitize();
         self.control.apply(&settings);
         self.dirty.store(true, Ordering::SeqCst);
         self.wake.notify_one();

@@ -32,6 +32,8 @@ export type ReplayGainMode = 'off' | 'track' | 'album' | 'smart';
 export type AbSlot = 'a' | 'b';
 
 export interface DspSettings {
+  /** Settings format; the core migrates older saved settings. */
+  version: number;
   eqEnabled: boolean;
   slot: AbSlot;
   /** Hear the signal without the EQ and tone controls. */

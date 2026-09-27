@@ -327,17 +327,17 @@ export function DspView() {
                     <span className="mono w-[60px] text-right text-[11.5px]">{formatGain(settings.replayGainPreampDb)}</span>
                   </div>
                 </Setting>
-                <Setting column title="Untagged files" hint="Gain for files without ReplayGain tags">
+                <Setting column title="Untagged files" hint="Files without ReplayGain tags; 0 dB plays them as mastered">
                   <div className="flex items-center gap-3">
                     <div className="flex-1">
                       <CenterSlider
                         label="Gain for untagged files"
                         value={settings.replayGainFallbackDb}
-                        min={-18}
-                        max={0}
-                        center={-8}
+                        min={-15}
+                        max={6}
+                        center={0}
                         step={0.5}
-                        reset={-8}
+                        reset={0}
                         valueText={formatGain(settings.replayGainFallbackDb)}
                         onChange={(v) => patchDsp({ replayGainFallbackDb: Math.round(v * 10) / 10 })}
                       />

@@ -1,15 +1,21 @@
 //! The native processing chain between the decoder and the audio output.
 //!
-//! The chain is installed as playbin's `audio-filter`, so it lives inside the
-//! playback pipeline and survives gapless track changes. All processing runs
-//! on 64-bit float samples:
+//! The chain is playbin's `audio-sink`: a bin that ends in the real output
+//! sink. It lives inside the playback pipeline and survives gapless track
+//! changes. All processing runs on 64-bit float samples:
 //!
 //! ```text
-//! decoded PCM ─ audioconvert ─ F64 ─ processor ─ volume ─ audioconvert ─ output
-//!                                     │ ReplayGain, preamp, EQ, balance,
-//!                                     │ width, crossfeed, fades, limiter
-//!                                     └─ analysis tap (spectrum, meters)
+//! playsink queue ─ audioconvert ─ F64 ─ processor ─ volume ─ audioconvert ─ output sink
+//!                                        │ ReplayGain, preamp, EQ, balance,
+//!                                        │ width, crossfeed, fades, limiter
+//!                                        └─ analysis tap (spectrum, meters)
 //! ```
+//!
+//! It sits *after* playsink's internal queue on purpose. As an `audio-filter`
+//! it would run in front of that queue, about 1.3 s ahead of the speakers:
+//! every setting would be heard over a second late, and a soft pause would
+//! stop the output before its fade was ever heard. Here the processor is
+//! ahead only by the output's own buffer.
 //!
 //! The processor is a buffer probe on the F64 stage, so it sees the stream's
 //! caps, tags and flushes in order with the samples. Settings reach it
@@ -36,6 +42,8 @@ use crate::error::AppResult;
 pub struct DspChain {
     bin: gst::Bin,
     volume: gst::Element,
+    to_output: gst::Element,
+    sink: Mutex<Option<gst::Element>>,
     control: Arc<DspControl>,
 }
 
@@ -62,9 +70,7 @@ impl DspChain {
         gst::Element::link_many(chain)?;
 
         let sink_pad = to_float.static_pad("sink").expect("audioconvert has a sink pad");
-        let src_pad = to_output.static_pad("src").expect("audioconvert has a src pad");
         bin.add_pad(&gst::GhostPad::builder_with_target(&sink_pad)?.name("sink").build())?;
-        bin.add_pad(&gst::GhostPad::builder_with_target(&src_pad)?.name("src").build())?;
 
         let shared = Arc::new(Shared::new());
         install_processor(&float_caps.static_pad("src").expect("capsfilter has a src pad"), shared.clone());
@@ -76,8 +82,25 @@ impl DspChain {
                 let _ = status.send(s);
             }));
         }
-        let control = Arc::new(DspControl { shared, to_output, analysis, status, settings: Mutex::default() });
-        Ok(Self { bin, volume, control })
+        let control =
+            Arc::new(DspControl { shared, to_output: to_output.clone(), analysis, status, settings: Mutex::default() });
+        Ok(Self { bin, volume, to_output, sink: Mutex::new(None), control })
+    }
+
+    /// Makes `sink` the chain's output, replacing (and closing) the previous
+    /// one. Only while the pipeline is READY or NULL.
+    pub fn set_sink(&self, sink: &gst::Element) -> AppResult<()> {
+        let mut current = self.sink.lock().unwrap();
+        if let Some(old) = current.take() {
+            self.to_output.unlink(&old);
+            self.bin.remove(&old)?;
+            let _ = old.set_state(gst::State::Null);
+        }
+        self.bin.add(sink)?;
+        self.to_output.link(sink)?;
+        sink.sync_state_with_parent()?;
+        *current = Some(sink.clone());
+        Ok(())
     }
 
     pub fn element(&self) -> &gst::Element {

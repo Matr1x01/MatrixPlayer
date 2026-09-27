@@ -153,6 +153,7 @@ const warm = {
 const flatCurve = { ...warm, parametric: warm.parametric.map((b) => ({ ...b, gainDb: 0 })), bassDb: 0, trebleDb: 0 };
 const graphic = (name: string, gains: number[]) => ({ name, builtin: true, curve: { ...flatCurve, mode: 'graphic10' as const, graphic10: gains } });
 const dspSettings: DspSettings = {
+  version: 2,
   eqEnabled: true,
   slot: 'a',
   bypass: false,
@@ -166,7 +167,7 @@ const dspSettings: DspSettings = {
   crossfeed: false,
   replayGain: 'album',
   replayGainPreampDb: 0,
-  replayGainFallbackDb: -8,
+  replayGainFallbackDb: 0,
   clippingPrevention: true,
   softFades: true,
   dither: false,

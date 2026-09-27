@@ -71,8 +71,8 @@ impl AudioEngine {
         let shared = Arc::new(Shared::default());
         let dsp = DspChain::build()?;
         watch_caps(&dsp.input_pad(), &shared, events.clone(), EngineEvent::DecodedFormat);
-        playbin.set_property("audio-filter", dsp.element());
-        attach_sink(&playbin, &out.sink, &shared, &events);
+        attach_sink(&dsp, &out.sink, &shared, &events)?;
+        playbin.set_property("audio-sink", dsp.element());
 
         connect_gapless(&playbin, &shared);
         install_bus_handler(&playbin, &shared, events.clone());
@@ -106,7 +106,7 @@ impl AudioEngine {
     /// reloads whatever was playing.
     pub fn set_output(&mut self, out: output::Output) -> AppResult<()> {
         self.reset()?;
-        attach_sink(&self.playbin, &out.sink, &self.shared, &self.events);
+        attach_sink(&self.dsp, &out.sink, &self.shared, &self.events)?;
         self.sink = out.sink;
         self.backend = out.backend;
         self.device = out.device;
@@ -246,16 +246,16 @@ fn install_bus_handler(playbin: &gst::Element, shared: &Arc<Shared>, events: Unb
     });
 }
 
-/// Makes `sink` the pipeline's output and reports the formats it receives.
+/// Makes `sink` the DSP chain's output and reports the formats it receives.
 fn attach_sink(
-    playbin: &gst::Element,
+    dsp: &DspChain,
     sink: &gst::Element,
     shared: &Arc<Shared>,
     events: &UnboundedSender<EngineMessage>,
-) {
+) -> AppResult<()> {
     let pad = sink.static_pad("sink").expect("audio sinks have a sink pad");
     watch_caps(&pad, shared, events.clone(), EngineEvent::OutputFormat);
-    playbin.set_property("audio-sink", sink);
+    dsp.set_sink(sink)
 }
 
 /// Turns the DSP chain's analysis ring into visualizer frames while
@@ -521,7 +521,7 @@ mod tests {
             }
         }
         assert!(seen.contains(&(RgSource::Album, -6.5)), "{seen:?}");
-        assert_eq!(seen.last(), Some(&(RgSource::Untagged, -8.0)), "the untagged track gets the fallback: {seen:?}");
+        assert_eq!(seen.last(), Some(&(RgSource::Untagged, 0.0)), "the untagged track plays as mastered: {seen:?}");
     }
 
     #[test]
@@ -561,6 +561,88 @@ mod tests {
         assert!((frame.peak_db[0] + 14.0).abs() < 1.0, "peak {}", frame.peak_db[0]);
         let band = frame.bands.iter().enumerate().max_by(|x, y| x.1.total_cmp(y.1)).unwrap().0;
         assert!((18..=26).contains(&band), "loudest band {band}");
+    }
+
+    /// With default settings and the volume at 100%, an untagged file reaches
+    /// the output at the level it was mastered at, as in other players.
+    #[test]
+    fn default_settings_play_untagged_files_at_unity_gain() {
+        use crate::dsp::settings::DspSettings;
+
+        let db = output_peak_db(&DspSettings::default());
+        // The fixture is a sine at 0.2 of full scale (−14 dBFS).
+        assert!((db - 20.0 * 0.2f64.log10()).abs() < 0.2, "output peak {db:.2} dBFS");
+    }
+
+    /// An EQ boost at the tone's frequency raises what reaches the output
+    /// by that much (auto preamp off, so nothing else moves).
+    #[test]
+    fn an_eq_boost_reaches_the_output() {
+        use crate::dsp::settings::{DspSettings, EqBand, EqCurve};
+
+        let mut settings = DspSettings { eq_enabled: true, auto_preamp: false, ..DspSettings::default() };
+        settings.a = EqCurve { parametric: vec![EqBand::peak(440.0, 6.0, 1.0)], ..EqCurve::default() };
+        let db = output_peak_db(&settings);
+        assert!((db - (20.0 * 0.2f64.log10() + 6.0)).abs() < 0.3, "output peak {db:.2} dBFS");
+    }
+
+    /// Plays a 440 Hz fixture at 0.2 of full scale through the whole engine
+    /// with `settings` and the volume at 100%; returns the output peak (dBFS).
+    fn output_peak_db(settings: &crate::dsp::settings::DspSettings) -> f64 {
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.flac");
+        write_flac(&a, 1.0, "A");
+        let sink = gst::ElementFactory::make("fakesink")
+            .name("matrixplayer-output")
+            .property("sync", false)
+            .property("signal-handoffs", true)
+            .build()
+            .unwrap();
+        let peak = Arc::new(Mutex::new(0.0f64));
+        let seen = peak.clone();
+        sink.connect("handoff", false, move |args| {
+            let buffer = args[1].get::<gst::Buffer>().ok()?;
+            let map = buffer.map_readable().ok()?;
+            let p = map
+                .as_slice()
+                .chunks_exact(8)
+                .map(|b| f64::from_ne_bytes(b.try_into().unwrap()).abs())
+                .fold(0.0, f64::max);
+            let mut max = seen.lock().unwrap();
+            *max = max.max(p);
+            None
+        });
+        let (tx, mut rx) = unbounded_channel();
+        let engine =
+            AudioEngine::new(tx, output::Output { sink, backend: output::OutputBackend::Auto, device: None }).unwrap();
+        engine.dsp().apply(settings);
+        engine.set_volume(1.0);
+        engine.load(&path_to_uri(&a).unwrap(), None, true).unwrap();
+        collect_until(&mut rx, |e| matches!(e, EngineEvent::EndOfStream));
+        20.0 * peak.lock().unwrap().log10()
+    }
+
+    /// Settings (EQ, fades) are heard only once processed audio reaches the
+    /// speakers, so the processor must not run far ahead of the output.
+    #[test]
+    fn processing_runs_just_ahead_of_the_output() {
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.flac");
+        write_flac(&a, 3.0, "A");
+        let (tx, _rx) = unbounded_channel();
+        let engine = AudioEngine::new(tx, output::Output::fake(true)).unwrap();
+        engine.load(&path_to_uri(&a).unwrap(), None, true).unwrap();
+        let mut leads = Vec::new();
+        for _ in 0..5 {
+            std::thread::sleep(Duration::from_millis(300));
+            if let Some(now) = engine.running_time() {
+                leads.push(engine.dsp().processed_running_time().saturating_sub(now) / 1_000_000);
+            }
+        }
+        let worst = leads.iter().copied().max().expect("running time is known while playing");
+        assert!(worst < 400, "processing ran {worst} ms ahead of the output ({leads:?})");
     }
 
     #[test]
