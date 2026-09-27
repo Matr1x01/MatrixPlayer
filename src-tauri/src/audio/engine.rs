@@ -36,6 +36,10 @@ struct Shared {
     starting: Mutex<VecDeque<(String, bool)>>,
     /// The stream that started most recently.
     current_uri: Mutex<Option<String>>,
+    /// The last error posted on the bus, so a load that fails synchronously
+    /// can report why (file not found, not audio…) instead of only that the
+    /// state change failed.
+    last_error: Mutex<Option<EngineError>>,
     playing: AtomicBool,
     shutdown: AtomicBool,
 }
@@ -128,14 +132,62 @@ impl AudioEngine {
     ///
     /// `next` is installed before the pipeline starts so that even a very
     /// short track cannot reach `about-to-finish` without its continuation.
-    pub fn load(&self, uri: &str, next: Option<String>, play: bool) -> AppResult<()> {
-        self.reset()?;
+    ///
+    /// When the pipeline refuses to start the stream, the error says why
+    /// (from the bus, when GStreamer posted a reason), and the pipeline is
+    /// brought all the way down so the next load starts clean.
+    pub fn load(&self, uri: &str, next: Option<String>, play: bool) -> Result<(), EngineError> {
+        let target = if play { gst::State::Playing } else { gst::State::Paused };
+        self.reset().map_err(|e| EngineError {
+            kind: EngineErrorKind::Other,
+            message: e.to_string(),
+            detail: None,
+            uri: Some(uri.to_owned()),
+        })?;
         *self.shared.next_uri.lock().unwrap() = next;
+        self.start(uri);
+        if self.playbin.set_state(target).is_ok() {
+            return Ok(());
+        }
+        // After a stream fails to start, playbin3 (1.24) spends the next
+        // attempt on the source that failed, whatever URI was set since, and
+        // only the attempt after that opens the new one. So a failure here
+        // may be the previous file's: try once more from NULL, with what
+        // that attempt posted marked stale.
+        self.shared.epoch.fetch_add(1, Ordering::SeqCst);
+        let _ = self.playbin.set_state(gst::State::Null);
+        self.start(uri);
+        if self.playbin.set_state(target).is_ok() {
+            return Ok(());
+        }
+        let posted = self.shared.last_error.lock().unwrap().take();
+        self.recover();
+        let mut error = posted.unwrap_or_else(|| EngineError {
+            kind: EngineErrorKind::Other,
+            message: "The file could not be opened".into(),
+            detail: None,
+            uri: None,
+        });
+        error.uri = Some(uri.to_owned());
+        Err(error)
+    }
+
+    /// Hands `uri` to playbin as the stream to start.
+    fn start(&self, uri: &str) {
         *self.shared.starting.lock().unwrap() = VecDeque::from([(uri.to_owned(), false)]);
         *self.shared.current_uri.lock().unwrap() = Some(uri.to_owned());
+        self.shared.last_error.lock().unwrap().take();
         self.playbin.set_property("uri", uri);
-        self.playbin.set_state(if play { gst::State::Playing } else { gst::State::Paused })?;
-        Ok(())
+    }
+
+    /// Takes the pipeline down to NULL after a playback error, releasing the
+    /// output and every element of the failed stream. Starts a new epoch, so
+    /// anything the failed stream posted is ignored.
+    pub fn recover(&self) {
+        let _ = self.playbin.set_state(gst::State::Null);
+        self.shared.playing.store(false, Ordering::SeqCst);
+        self.shared.starting.lock().unwrap().clear();
+        self.shared.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn play(&self) -> AppResult<()> {
@@ -219,12 +271,25 @@ fn connect_gapless(playbin: &gst::Element, shared: &Arc<Shared>) {
     playbin.connect("about-to-finish", false, move |args| {
         let playbin = args[0].get::<gst::Element>().expect("about-to-finish carries playbin");
         if let Some(next) = shared.next_uri.lock().unwrap().take() {
+            // A file that has gone since it was queued would fail inside the
+            // running pipeline; let the current stream end instead, and the
+            // player reports and skips the missing file on its own.
+            if uri_file_is_missing(&next) {
+                log::debug!("gapless: not queueing missing {next}");
+                return None;
+            }
             log::debug!("gapless: queueing {next}");
             playbin.set_property("uri", &next);
             shared.starting.lock().unwrap().push_back((next, true));
         }
         None
     });
+}
+
+/// Whether `uri` names a local file that does not exist. Other URIs are
+/// left for GStreamer to judge.
+fn uri_file_is_missing(uri: &str) -> bool {
+    gst::glib::filename_from_uri(uri).is_ok_and(|(path, _)| !path.exists())
 }
 
 /// Handles bus messages synchronously on the thread that posts them.
@@ -327,7 +392,14 @@ fn translate(msg: &gst::Message, playbin: &gst::Element, shared: &Shared) -> Opt
             let (kind, message) = classify(&err.error(), from_output);
             let detail = err.debug().map(|d| d.to_string());
             log::error!("playback error: {} ({:?})", err.error(), detail);
-            Some(EngineEvent::Error(EngineError { kind, message, detail, uri }))
+            let error = EngineError { kind, message, detail, uri };
+            // Keep the first, most specific reason: GStreamer follows a
+            // failure with generic "state change failed" errors.
+            let mut last = shared.last_error.lock().unwrap();
+            if last.as_ref().is_none_or(|e| e.kind == EngineErrorKind::Other) {
+                *last = Some(error.clone());
+            }
+            Some(EngineEvent::Error(error))
         }
         M::Warning(w) => {
             // playsink warns that it has no volume element: expected, since

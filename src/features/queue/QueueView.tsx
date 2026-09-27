@@ -51,7 +51,7 @@ const QueueRow = memo(function QueueRow({ entry, number, grip, ghost, onNudge, i
   const menu = contextMenu(() => queueMenu(entry), { label: 'Queue entry actions' });
   return (
     <div
-      className={ghost ? 'qr ghost' : 'qr'}
+      className={['qr', ghost && 'ghost', entry.failed && 'failed'].filter(Boolean).join(' ')}
       role="button"
       tabIndex={0}
       data-reorder
@@ -71,8 +71,15 @@ const QueueRow = memo(function QueueRow({ entry, number, grip, ghost, onNudge, i
       <span className="mono t3 text-right text-[11px]">{number}</span>
       <Artwork artwork={entry.track.artwork} size={36} radius={3} title={metadata.album ?? metadata.title} />
       <div className="flex min-w-0 flex-col gap-px">
-        <span className="el font-medium" style={{ color: 'var(--tx)' }}>
-          {metadata.title}
+        <span className="flex min-w-0 items-center gap-1.5">
+          {entry.failed && (
+            <span className="flex-none" style={{ color: 'var(--warn)' }} data-tip="Could not be played the last time it was tried">
+              <Icon name="warn" size={13} />
+            </span>
+          )}
+          <span className="el font-medium" style={{ color: 'var(--tx)' }}>
+            {metadata.title}
+          </span>
         </span>
         <span className="el t3 text-[12px]">{metadata.artist ?? 'Unknown artist'}</span>
       </div>

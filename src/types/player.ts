@@ -80,6 +80,8 @@ export interface QueueEntry {
   track: TrackInfo;
   /** Queued with "play next" / "add to queue" rather than started. */
   added: boolean;
+  /** Could not be played the last time it was tried. */
+  failed: boolean;
 }
 
 export interface QueueSnapshot {

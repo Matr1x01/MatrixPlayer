@@ -95,10 +95,10 @@ const album: [string, number][] = [
   ['Lee Wave', 287000],
   ['Clear Night, Still Air', 484000],
 ];
-const entries: QueueEntry[] = album.map(([title, ms], i) => ({ id: i + 1, track: track(title, i + 1, ms), added: false }));
+const entries: QueueEntry[] = album.map(([title, ms], i) => ({ id: i + 1, track: track(title, i + 1, ms), added: false, failed: false }));
 entries.push(
-  { id: 20, track: track('Harvest Line', 3, 242000, { artist: 'Tarn & Vale', album: 'Weathervane', year: 2024 }, 'vane'), added: true },
-  { id: 21, track: track('Weathervane', 5, 337000, { artist: 'Tarn & Vale', album: 'Weathervane', year: 2024 }, 'vane'), added: true },
+  { id: 20, track: track('Harvest Line', 3, 242000, { artist: 'Tarn & Vale', album: 'Weathervane', year: 2024 }, 'vane'), added: true, failed: false },
+  { id: 21, track: track('Weathervane', 5, 337000, { artist: 'Tarn & Vale', album: 'Weathervane', year: 2024 }, 'vane'), added: true, failed: false },
 );
 
 const empty = params.has('empty');

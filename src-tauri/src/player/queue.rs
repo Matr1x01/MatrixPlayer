@@ -30,6 +30,9 @@ pub struct QueueEntry {
     /// Queued with "play next" or "add to queue", rather than as part of
     /// what was started (an album, a folder…).
     pub added: bool,
+    /// The file could not be played the last time it was tried (missing,
+    /// unreadable, not audio).
+    pub failed: bool,
 }
 
 /// Where newly opened tracks go.
@@ -102,7 +105,12 @@ impl Queue {
         for track in tracks {
             let id = self.next_id;
             self.next_id += 1;
-            self.entries.push(QueueEntry { id, track, added: mode != InsertMode::Replace });
+            self.entries.push(QueueEntry {
+                id,
+                track,
+                added: mode != InsertMode::Replace,
+                failed: false,
+            });
         }
         let mut new: Vec<usize> = (first_new..self.entries.len()).collect();
 
@@ -171,6 +179,18 @@ impl Queue {
         };
         self.cursor = Some(prev);
         self.current()
+    }
+
+    /// Flags an entry as having failed to play, or clears the flag. Returns
+    /// whether anything changed.
+    pub fn set_failed(&mut self, id: EntryId, failed: bool) -> bool {
+        match self.entries.iter_mut().find(|e| e.id == id) {
+            Some(entry) if entry.failed != failed => {
+                entry.failed = failed;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn jump_to(&mut self, id: EntryId) -> Option<&QueueEntry> {
