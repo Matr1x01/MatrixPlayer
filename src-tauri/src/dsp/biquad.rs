@@ -79,7 +79,7 @@ impl Coeffs {
 
 /// Filter memory for one channel (transposed direct form II, which behaves
 /// well numerically in floating point).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct State {
     z1: f64,
     z2: f64,
@@ -92,6 +92,15 @@ impl State {
         self.z1 = c.b1 * x - c.a1 * y + self.z2;
         self.z2 = c.b2 * x - c.a2 * y;
         y
+    }
+
+    /// Zeroes memories too small to matter, before they turn subnormal.
+    pub fn flush_denormals(&mut self) {
+        for z in [&mut self.z1, &mut self.z2] {
+            if z.abs() < 1e-30 {
+                *z = 0.0;
+            }
+        }
     }
 }
 

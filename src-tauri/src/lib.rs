@@ -45,6 +45,7 @@ pub fn run() {
         std::process::exit(1);
     }
     log::info!("{}", gstreamer::version_string());
+    audio::prefer_float_decoders();
 
     tauri::Builder::default()
         // Must come first: a second launch hands its arguments (files to

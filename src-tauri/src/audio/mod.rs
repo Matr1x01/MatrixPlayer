@@ -16,10 +16,32 @@ pub mod waveform;
 
 use std::time::Duration;
 
+use gstreamer as gst;
+use gstreamer::prelude::*;
 use serde::Serialize;
 
 pub use engine::AudioEngine;
 pub use output::OutputBackend;
+
+/// gst-libav's MP3 and Opus decoders, which output 32-bit float.
+const FLOAT_DECODERS: [&str; 2] = ["avdec_mp3float", "avdec_opus"];
+
+/// Makes GStreamer pick decoders that output float for MP3 and Opus.
+///
+/// The default ones (`mpg123audiodec`, `opusdec`) output 16-bit integers, so
+/// a lossy stream would lose its resolution below 16 bits before any
+/// processing. Both MP3 decoders trim LAME-tagged files to the exact sample
+/// count, so gapless playback is unaffected. Without gst-libav this does
+/// nothing. Call once, right after `gstreamer::init()`.
+pub fn prefer_float_decoders() {
+    let registry = gst::Registry::get();
+    for name in FLOAT_DECODERS {
+        if let Some(feature) = registry.lookup_feature(name) {
+            feature.set_rank(gst::Rank::PRIMARY + 1);
+            log::debug!("preferring {name}: it decodes to float");
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineState {
@@ -93,4 +115,22 @@ pub enum EngineEvent {
     DecodedFormat(StreamFormat),
     /// Format handed to the output sink.
     OutputFormat(StreamFormat),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn float_decoders_outrank_the_16_bit_ones() {
+        gst::init().unwrap();
+        prefer_float_decoders();
+        let registry = gst::Registry::get();
+        let rank = |name: &str| registry.lookup_feature(name).map(|f| f.rank());
+        for (float, fixed) in [("avdec_mp3float", "mpg123audiodec"), ("avdec_opus", "opusdec")] {
+            if let (Some(float_rank), Some(fixed_rank)) = (rank(float), rank(fixed)) {
+                assert!(float_rank > fixed_rank, "{float} {float_rank:?} vs {fixed} {fixed_rank:?}");
+            }
+        }
+    }
 }

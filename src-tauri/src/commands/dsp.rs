@@ -20,14 +20,30 @@ pub fn dsp_state(state: State<'_, AppState>) -> DspState {
 
 /// Applies new settings right away. Returns them as applied (clamped).
 #[tauri::command]
-pub fn dsp_update(state: State<'_, AppState>, settings: DspSettings) -> DspSettings {
-    state.dsp.update(settings)
+pub async fn dsp_update(state: State<'_, AppState>, settings: DspSettings) -> AppResult<DspSettings> {
+    let before = state.dsp.control().settings();
+    let applied = state.dsp.update(settings);
+    apply_output_settings(&state, &before, &applied).await?;
+    Ok(applied)
 }
 
 /// Resets playback processing to its defaults; the equalizer is kept.
 #[tauri::command]
-pub fn dsp_restore_defaults(state: State<'_, AppState>) -> DspSettings {
-    state.dsp.restore_defaults()
+pub async fn dsp_restore_defaults(state: State<'_, AppState>) -> AppResult<DspSettings> {
+    let before = state.dsp.control().settings();
+    let applied = state.dsp.restore_defaults();
+    apply_output_settings(&state, &before, &applied).await?;
+    Ok(applied)
+}
+
+/// Dither is set up when the output's format is negotiated, so a change is
+/// only heard once the track is reopened (which the player does only for
+/// outputs that take integer samples).
+async fn apply_output_settings(state: &AppState, before: &DspSettings, after: &DspSettings) -> AppResult<()> {
+    if before.dither == after.dither {
+        return Ok(());
+    }
+    state.player.command(PlayerCommand::RenegotiateOutput).await
 }
 
 #[tauri::command]

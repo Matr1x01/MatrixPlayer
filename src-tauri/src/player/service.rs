@@ -99,6 +99,10 @@ pub enum PlayerCommand {
     SetGapless(bool),
     /// Switches to another output; whatever was playing is reopened there.
     SetOutput(Box<Output>),
+    /// Reopens the current track where it is, so an output setting that is
+    /// fixed when the format is negotiated (dither) takes effect. Only done
+    /// when the output takes integer samples: float outputs never dither.
+    RenegotiateOutput,
     Insert {
         tracks: Vec<Arc<TrackInfo>>,
         mode: InsertMode,
@@ -412,6 +416,7 @@ impl Player {
                 settings::set(&self.db, "player.gapless", &gapless).await
             }
             PlayerCommand::SetOutput(output) => self.set_output(*output),
+            PlayerCommand::RenegotiateOutput => self.renegotiate_output(),
             PlayerCommand::Insert { tracks, mode, start } => self.insert(tracks, mode, start),
             PlayerCommand::PlayEntry(id) => {
                 self.queue.jump_to(id).ok_or_else(|| AppError::InvalidArgument("no such queue entry".into()))?;
@@ -593,9 +598,7 @@ impl Player {
     /// Moves playback to another output, reopening the current track at the
     /// same position.
     fn set_output(&mut self, output: Output) -> AppResult<()> {
-        let active = self.queue.current().is_some() && self.intent != Intent::Stop && self.error.is_none();
-        let position = if self.loading { self.position } else { self.engine.position().unwrap_or(self.position) };
-        let play = self.intent == Intent::Play;
+        let resume = self.resume_point();
         self.cancel_fade();
         self.engine.set_output(output)?;
         self.engine_state = EngineState::Ready;
@@ -604,14 +607,37 @@ impl Player {
         self.decoded = None;
         self.output = None;
         self.emit_signal();
-        if !active {
-            self.refresh_status();
-            return Ok(());
+        match resume {
+            Some(point) => self.resume_at(point),
+            None => {
+                self.refresh_status();
+                Ok(())
+            }
         }
+    }
+
+    fn renegotiate_output(&mut self) -> AppResult<()> {
+        let integer = self.output.as_ref().is_some_and(|f| !f.float);
+        match self.resume_point() {
+            Some(point) if integer => self.resume_at(point),
+            _ => Ok(()),
+        }
+    }
+
+    /// Where to pick up after the pipeline is rebuilt (position, and whether
+    /// to play); `None` when nothing is loaded.
+    fn resume_point(&self) -> Option<(Duration, bool)> {
+        let active = self.queue.current().is_some() && self.intent != Intent::Stop && self.error.is_none();
+        let position = if self.loading { self.position } else { self.engine.position().unwrap_or(self.position) };
+        active.then_some((position, self.intent == Intent::Play))
+    }
+
+    /// Reopens the current track at a point from [`Self::resume_point`].
+    fn resume_at(&mut self, (position, play): (Duration, bool)) -> AppResult<()> {
         self.failures = 0;
         if position > Duration::from_secs(1) {
             // Open paused and seek first, so the start of the track is
-            // never heard on the new output.
+            // never heard.
             return self.load_current_at(false, Some((position, play)));
         }
         self.load_current(play)
@@ -749,8 +775,9 @@ impl Player {
             uri: None,
         })?;
         self.intent = if play { Intent::Play } else { Intent::Pause };
+        // No fade back to full level here: the engine's reset tells the
+        // processor to start the new stream from rest, at full level.
         self.cancel_fade();
-        self.dsp.fade(1.0, 0.0);
         self.loading = true;
         self.seeking = false;
         self.position = Duration::ZERO;
@@ -964,10 +991,12 @@ impl Player {
             let moved = match self.direction {
                 Direction::Forward => self.queue.advance().is_some(),
                 // Nothing playable further back: go forward from here.
-                Direction::Backward => self.queue.retreat().is_some() || {
-                    self.direction = Direction::Forward;
-                    self.queue.advance().is_some()
-                },
+                Direction::Backward => {
+                    self.queue.retreat().is_some() || {
+                        self.direction = Direction::Forward;
+                        self.queue.advance().is_some()
+                    }
+                }
             };
             if !moved {
                 return false;
@@ -1358,7 +1387,8 @@ mod tests {
     async fn a_file_that_fails_to_open_does_not_break_the_next_one() {
         use std::os::unix::fs::PermissionsExt;
         let mut h = harness().await;
-        let (a, locked, c) = (h.dir.path().join("a.flac"), h.dir.path().join("locked.flac"), h.dir.path().join("c.flac"));
+        let (a, locked, c) =
+            (h.dir.path().join("a.flac"), h.dir.path().join("locked.flac"), h.dir.path().join("c.flac"));
         write_flac(&a, 4.0, "First");
         write_flac(&locked, 1.0, "Locked");
         write_flac(&c, 4.0, "Third");
@@ -1601,6 +1631,39 @@ mod tests {
         h.player.command(PlayerCommand::SetOutput(Box::new(Output::fake(true)))).await.unwrap();
         let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
         assert!(!statuses(&events).contains(&PlaybackStatus::Paused), "{:?}", statuses(&events));
+        let position = h.player.snapshot().await.unwrap().position_ms;
+        assert!(position >= 1400, "resumed at {position} ms");
+    }
+
+    /// An output that takes only 16-bit samples, like many ALSA devices.
+    fn integer_output() -> Output {
+        use gstreamer::prelude::*;
+        let bin = gstreamer::parse::bin_from_description(
+            "capsfilter caps=audio/x-raw,format=S16LE ! fakesink sync=true",
+            true,
+        )
+        .unwrap();
+        Output { sink: bin.upcast(), backend: crate::audio::OutputBackend::Auto, device: None }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn renegotiating_reopens_integer_outputs_where_they_were() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 5.0, "Long");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        // A float output never dithers: nothing to reopen.
+        h.player.command(PlayerCommand::RenegotiateOutput).await.unwrap();
+        assert_eq!(h.player.snapshot().await.unwrap().status, PlaybackStatus::Playing);
+
+        h.player.command(PlayerCommand::SetOutput(Box::new(integer_output()))).await.unwrap();
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Position { position_ms, .. } if *position_ms >= 1500))
+            .await;
+        h.player.command(PlayerCommand::RenegotiateOutput).await.unwrap();
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        assert!(statuses(&events).contains(&PlaybackStatus::Loading), "reopened: {:?}", statuses(&events));
         let position = h.player.snapshot().await.unwrap().position_ms;
         assert!(position >= 1400, "resumed at {position} ms");
     }
