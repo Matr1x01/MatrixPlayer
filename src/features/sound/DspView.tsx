@@ -214,7 +214,7 @@ export function DspView() {
                     <span className="el text-[12px] font-semibold">{stage.name}</span>
                     <span className="h-1.5 w-1.5 flex-none rounded-full" style={{ background: STAGE_DOT[stage.state] }} />
                   </span>
-                  <span className="mono el text-[10px]" style={{ color: 'var(--tx2)' }}>
+                  <span className="node-value mono text-[10px]" style={{ color: 'var(--tx2)' }}>
                     {stage.value}
                   </span>
                 </button>

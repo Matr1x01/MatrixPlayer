@@ -2,7 +2,8 @@
   /* Signal chain nodes (Audio / DSP board). */
   .chain {
     display: flex;
-    align-items: center;
+    /* Equal heights when some values take two lines. */
+    align-items: stretch;
     overflow-x: auto;
     padding-bottom: 2px;
   }
@@ -22,6 +23,16 @@
     border: 1px solid var(--ln2);
   }
   .node:hover { border-color: var(--tx3); }
+  /* Up to two lines before cutting: in a laptop-width window a one-line
+     value was cut to "10-band · Ba…". */
+  .node-value {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
+  }
   .node.off {
     background: transparent;
     border-style: dashed;
@@ -33,6 +44,7 @@
   }
   .lnk {
     flex: 0 1 40px;
+    align-self: center;
     min-width: 10px;
     height: 1px;
     background: var(--ln2);
@@ -261,6 +273,16 @@
   .band-del:hover { color: var(--err); background: var(--bg3); }
   .band .kv { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; font-size: 11px; }
   .band .kv > span { flex: none; }
+  /* Narrow cards (eight bands in a laptop-width window): values under their
+     labels, so "12.0 kHz" is never cut to "12.0 kl". */
+  .band { container-type: inline-size; }
+  @container (max-width: 100px) {
+    .band .kv { flex-direction: column; align-items: stretch; gap: 1px; }
+    .band .kv .vfield { text-align: left; }
+    .band .dd { font-size: 11px; }
+    .band .dd select { padding: 0 13px 0 5px; }
+    .band .dd .ic { right: 3px; }
+  }
   .dd {
     position: relative;
     height: 24px;
