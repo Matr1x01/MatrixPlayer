@@ -149,16 +149,23 @@ impl LibraryHandle {
     }
 
     /// Resolves a play request to player tracks, in order.
-    pub async fn resolve(&self, source: PlaySource) -> AppResult<Vec<Arc<TrackInfo>>> {
+    /// Also translates `start` (an index into the source) into an index
+    /// into the result. Tracks that are offline are left out, so the two
+    /// can differ; if the chosen track itself is offline, the next available
+    /// one is chosen.
+    pub async fn resolve_from(&self, source: PlaySource, start: usize) -> AppResult<(Vec<Arc<TrackInfo>>, usize)> {
         let ids = match source {
             PlaySource::Tracks { ids } => ids,
             PlaySource::Query { query } => query::track_list(&self.db, &query).await?.ids,
         };
-        let tracks = query::track_infos(&self.db, &ids).await?;
+        let aligned = query::track_infos_aligned(&self.db, &ids).await?;
+        let resolved_start = aligned.iter().take(start).filter(|t| t.is_some()).count();
+        let tracks: Vec<_> = aligned.into_iter().flatten().collect();
         if tracks.is_empty() {
             return Err(AppError::NotFound("none of these tracks are available".into()));
         }
-        Ok(tracks)
+        let start = resolved_start.min(tracks.len() - 1);
+        Ok((tracks, start))
     }
 
     /// Turns files and folders opened from outside the library into player
@@ -693,9 +700,9 @@ mod tests {
         assert!(lib.titles(TrackScope::All, "glosoli").await.is_empty(), "deleted files leave the search index");
 
         // Playing from the library builds player tracks from the database.
-        let tracks = lib
+        let (tracks, _) = lib
             .library
-            .resolve(PlaySource::Query {
+            .resolve_from(PlaySource::Query {
                 query: TrackQuery {
                     scope: TrackScope::Album { id: lfw.id },
                     filter: String::new(),
@@ -703,7 +710,7 @@ mod tests {
                     descending: false,
                     hi_res_only: false,
                 },
-            })
+            }, 0)
             .await
             .unwrap();
         assert_eq!(tracks.len(), 3);
@@ -718,6 +725,42 @@ mod tests {
         assert_eq!((stats.tracks, stats.albums, stats.genres, stats.roots), (0, 0, 0, 0));
         let fts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_search").fetch_one(db.pool()).await.unwrap();
         assert_eq!(fts, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn playing_a_list_keeps_repeats_and_the_chosen_track() {
+        gstreamer::init().unwrap();
+        let mut lib = library().await;
+        let music = lib.music();
+        album(&music.join("A/B"), "Artist", "Album", &["One", "Two", "Three"]);
+        lib.library.add_root(music.clone()).await.unwrap();
+        lib.scanned().await;
+        let db = lib.library.db().clone();
+        let all = TrackQuery {
+            scope: TrackScope::All,
+            filter: String::new(),
+            sort: Default::default(),
+            descending: false,
+            hi_res_only: false,
+        };
+        let ids = query::track_list(&db, &all).await.unwrap().ids;
+        let rows = query::tracks_by_ids(&db, &ids).await.unwrap();
+        let id = |title: &str| rows.iter().find(|r| r.title == title).unwrap().id;
+        let (one, two, three) = (id("One"), id("Two"), id("Three"));
+
+        // A history played twice over: the fourth entry is "Three".
+        let history = vec![one, two, one, three];
+        assert_eq!(query::tracks_by_ids(&db, &history).await.unwrap().len(), 4);
+        let (tracks, start) =
+            lib.library.resolve_from(PlaySource::Tracks { ids: history }, 3).await.unwrap();
+        assert_eq!(tracks.len(), 4, "repeats are kept");
+        assert_eq!(tracks[start].metadata.title, "Three");
+
+        // Unknown (or offline) entries before the chosen one shift it.
+        let (tracks, start) =
+            lib.library.resolve_from(PlaySource::Tracks { ids: vec![i64::MAX, two, three] }, 2).await.unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[start].metadata.title, "Three");
     }
 
     #[tokio::test(flavor = "multi_thread")]

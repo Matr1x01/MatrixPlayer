@@ -1072,7 +1072,9 @@ pub async fn track_list(db: &Database, query: &TrackQuery) -> AppResult<TrackLis
     Ok(TrackList { ids: rows.into_iter().map(|r| r.0).collect(), duration_ms, total_size })
 }
 
-/// Rows for `ids`, in the same order. Unknown ids are skipped.
+/// Rows for `ids`, in the same order. Unknown ids are skipped; an id that
+/// appears more than once (a playlist entry repeated, a track in the history
+/// twice) yields a row each time.
 pub async fn tracks_by_ids(db: &Database, ids: &[i64]) -> AppResult<Vec<TrackRow>> {
     let mut by_id: HashMap<i64, TrackRow> = HashMap::with_capacity(ids.len());
     for chunk in ids.chunks(500) {
@@ -1083,7 +1085,7 @@ pub async fn tracks_by_ids(db: &Database, ids: &[i64]) -> AppResult<Vec<TrackRow
                 .await?;
         by_id.extend(rows.into_iter().map(|r| (r.id, r)));
     }
-    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    Ok(ids.iter().filter_map(|id| by_id.get(id).cloned()).collect())
 }
 
 #[derive(sqlx::FromRow)]
@@ -1196,8 +1198,15 @@ impl FullTrack {
 }
 
 /// Full player tracks for `ids`, in order, built from the database without
-/// reading the files. Tracks on offline drives are left out.
+/// reading the files. Tracks on offline drives are left out. Repeated ids
+/// are kept, so positions into `ids` still line up with the result.
 pub async fn track_infos(db: &Database, ids: &[i64]) -> AppResult<Vec<Arc<TrackInfo>>> {
+    Ok(track_infos_aligned(db, ids).await?.into_iter().flatten().collect())
+}
+
+/// [`track_infos`], position for position: `None` where a track is unknown
+/// or offline, so callers can map an index into `ids` onto the result.
+pub async fn track_infos_aligned(db: &Database, ids: &[i64]) -> AppResult<Vec<Option<Arc<TrackInfo>>>> {
     let mut by_id: HashMap<i64, Arc<TrackInfo>> = HashMap::with_capacity(ids.len());
     for chunk in ids.chunks(500) {
         let list = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
@@ -1217,7 +1226,7 @@ pub async fn track_infos(db: &Database, ids: &[i64]) -> AppResult<Vec<Arc<TrackI
         .await?;
         by_id.extend(rows.into_iter().map(|r| (r.id, Arc::new(r.into_info()))));
     }
-    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    Ok(ids.iter().map(|id| by_id.get(id).cloned()).collect())
 }
 
 /// Library rows for files, keyed by path, so files opened from the file

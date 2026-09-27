@@ -184,12 +184,12 @@ pub async fn library_play(
     start: Option<usize>,
     shuffle: Option<bool>,
 ) -> AppResult<usize> {
-    let tracks = state.library.resolve(source).await?;
+    let (tracks, start) = state.library.resolve_from(source, start.unwrap_or(0)).await?;
     let count = tracks.len();
     if let Some(shuffle) = shuffle {
         state.player.command(PlayerCommand::SetShuffle(shuffle)).await?;
     }
-    state.player.command(PlayerCommand::Insert { tracks, mode, start: start.unwrap_or(0) }).await?;
+    state.player.command(PlayerCommand::Insert { tracks, mode, start }).await?;
     Ok(count)
 }
 
