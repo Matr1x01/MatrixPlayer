@@ -5,6 +5,7 @@ import { AppMark } from '@/components/icons/AppMark';
 import { Icon } from '@/components/icons/Icon';
 import { IconButton } from '@/components/ui/IconButton';
 import { openSearch } from '@/features/search/SearchDialog';
+import { setSettingsQuery, useSettingsSearch } from '@/features/settings/search';
 import { libraryApi } from '@/services/ipc';
 import { isScanning, useLibrary } from '@/stores/library';
 import { useNavigation } from '@/stores/navigation';
@@ -38,6 +39,35 @@ function SearchField({ width, placeholder, glass, shortcut, onOpen, tip }: Searc
       <span className="el flex-1 text-left">{placeholder}</span>
       {shortcut && <span className="kbd">{shortcut}</span>}
     </button>
+  );
+}
+
+/** Filters the settings sections as you type. */
+function SettingsSearch() {
+  const query = useSettingsSearch((s) => s.query);
+  // A fresh visit to Settings starts unfiltered.
+  useEffect(() => () => setSettingsQuery(''), []);
+  return (
+    <label className="fld tb-search" style={{ width: 360 }}>
+      <Icon name="search" size={16} />
+      <input
+        className="min-w-0 flex-1 bg-transparent outline-none"
+        // The field around it shows focus; a second ring inside is noise.
+        style={{ boxShadow: 'none' }}
+        placeholder="Search settings"
+        aria-label="Search settings"
+        value={query}
+        onChange={(e) => setSettingsQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Escape') return;
+          // First Esc clears the search, the next leaves the field (and a
+          // further one leaves Settings).
+          if (query) setSettingsQuery('');
+          else e.currentTarget.blur();
+          e.stopPropagation();
+        }}
+      />
+    </label>
   );
 }
 
@@ -146,16 +176,13 @@ export function TitleBar({ variant }: { variant: 'default' | 'nowPlaying' | 'set
         {variant === 'nowPlaying' && (
           <SearchField width={360} placeholder="Search library…" glass shortcut="Ctrl K" onOpen={() => openSearch()} />
         )}
-        {variant === 'settings' && (
-          <SearchField width={360} placeholder="Search settings" tip="Searching settings is not available yet" />
-        )}
+        {variant === 'settings' && <SettingsSearch />}
       </div>
 
       <div className="flex items-center gap-1.5">
         {variant === 'default' && <RescanButton />}
         {variant === 'nowPlaying' && (
           <>
-            <IconButton icon="mini" label="Mini player (not available yet)" iconSize={16} disabled />
             <IconButton
               icon={fullscreen ? 'exitFull' : 'full'}
               label={fullscreen ? 'Exit full screen' : 'Full screen'}

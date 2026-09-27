@@ -184,20 +184,20 @@ export function AppearanceSettings() {
         <ScaleSlider />
       </SettingRow>
       <SettingRow title="Motion" hint="Visualizer and transition animations">
-        <div className="flex gap-7">
-          <label className="flex items-center gap-2.5">
-            <Toggle on={prefs.reduceMotion} onChange={(reduceMotion) => void updatePreferences({ reduceMotion })} label="Reduce motion" />
-            Reduce motion
-          </label>
-          <label className="flex items-center gap-2.5">
-            <Toggle
-              on={prefs.sidebarExpanded}
-              onChange={(sidebarExpanded) => void updatePreferences({ sidebarExpanded })}
-              label="Sidebar expanded"
-            />
-            Sidebar expanded
-          </label>
-        </div>
+        <label className="flex items-center gap-2.5">
+          <Toggle on={prefs.reduceMotion} onChange={(reduceMotion) => void updatePreferences({ reduceMotion })} label="Reduce motion" />
+          Reduce motion
+        </label>
+      </SettingRow>
+      <SettingRow title="Sidebar" hint="Names and counts, or icons only (narrow windows always use icons)">
+        <label className="flex items-center gap-2.5">
+          <Toggle
+            on={prefs.sidebarExpanded}
+            onChange={(sidebarExpanded) => void updatePreferences({ sidebarExpanded })}
+            label="Sidebar expanded"
+          />
+          Sidebar expanded
+        </label>
       </SettingRow>
     </>
   );

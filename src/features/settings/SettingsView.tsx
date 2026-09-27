@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Icon } from '@/components/icons/Icon';
 import type { IconName } from '@/components/icons/paths';
@@ -16,6 +16,7 @@ import type { AppInfo } from '@/types/preferences';
 
 import { AppearanceSettings, SettingRow } from './AppearanceSettings';
 import { LibrarySettings } from './LibrarySettings';
+import { useSettingsSearch } from './search';
 import { SettingsPreview } from './SettingsPreview';
 import { SHORTCUTS } from './shortcuts';
 
@@ -45,6 +46,31 @@ const SECTIONS: { id: Section; label: string; icon: IconName }[] = [
   { id: 'desktop', label: 'Desktop integration', icon: 'tv' },
   { id: 'about', label: 'About', icon: 'info' },
 ];
+
+/** Words each section answers to in the settings search, beyond its name:
+ * its rows' titles and what they are about. */
+const KEYWORDS: Record<Section, string> = {
+  general: 'startup start launch resume restore session queue last',
+  library: 'music folders add remove rescan scan tags reread watching moved renamed files',
+  playback: 'gapless soft fades replaygain loudness previous restart broken files skip',
+  output: 'backend pipewire pulseaudio alsa device headphones dac speakers processing exclusive bit-perfect',
+  dsp: 'equalizer eq signal chain limiter crossfeed dither preamp replaygain',
+  appearance: 'theme dark light accent colour color background density rows interface scale zoom motion animation sidebar',
+  nowPlaying: 'visualizer spectrum waveform frequency meters artwork background',
+  lyrics: 'lyrics lrc synced embedded sources offset',
+  shortcuts: `keyboard keys hotkeys ${SHORTCUTS.map((s) => s.action).join(' ')}`,
+  desktop: 'mpris media keys lock screen notifications opening files command line launcher actions',
+  about: 'version gstreamer storage database',
+};
+
+function matches(section: (typeof SECTIONS)[number], query: string) {
+  const text = `${section.label} ${KEYWORDS[section.id]}`.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => text.includes(word));
+}
 
 function GeneralSettings() {
   const prefs = usePreferences((s) => s.prefs);
@@ -235,24 +261,27 @@ function About({ info }: { info: AppInfo | null }) {
 }
 
 export function SettingsView({ initial }: { initial?: string }) {
-  const [section, setSection] = useState<Section>(
-    SECTIONS.some((s) => s.id === initial) ? (initial as Section) : 'general',
-  );
+  const [chosen, setSection] = useState<Section>(SECTIONS.some((s) => s.id === initial) ? (initial as Section) : 'general');
   const [info, setInfo] = useState<AppInfo | null>(null);
   useEffect(() => {
     void systemApi.appInfo().then(setInfo);
   }, []);
+  const query = useSettingsSearch((s) => s.query.trim());
+  const found = useMemo(() => (query ? SECTIONS.filter((s) => matches(s, query)) : SECTIONS), [query]);
+  // While searching, show a matching section: the chosen one if it matches.
+  const section = query && found.length > 0 && !found.some((s) => s.id === chosen) ? found[0]!.id : chosen;
   const current = SECTIONS.find((s) => s.id === section)!;
 
   return (
     <div className="flex min-h-0 flex-1">
       <nav className="set-nav" aria-label="Settings sections">
-        {SECTIONS.map((s) => (
+        {found.map((s) => (
           <button key={s.id} type="button" className={s.id === section ? 'sn on' : 'sn'} onClick={() => setSection(s.id)}>
             <Icon name={s.icon} size={16} filled={s.icon === 'play'} />
             {s.label}
           </button>
         ))}
+        {found.length === 0 && <span className="t3 px-2.5 py-2 text-[12.5px]">No settings match “{query}”</span>}
         <div className="mt-auto flex flex-col gap-[3px] border-t border-ln p-2.5">
           <span className="mono t3 text-[10px]">MatrixPlayer {info?.version ?? ''}</span>
           <span className="mono t3 text-[10px]">Settings are saved automatically</span>
