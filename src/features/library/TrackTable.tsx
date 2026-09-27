@@ -1,4 +1,15 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 
 import { Icon } from '@/components/icons/Icon';
 import { Artwork } from '@/components/ui/Artwork';
@@ -71,10 +82,75 @@ const COLUMNS: Record<ColumnId, Column> = {
 };
 
 export const SONG_COLUMNS: ColumnId[] = ['num', 'art', 'title', 'artist', 'album', 'year', 'genre', 'format', 'rate', 'bits', 'size', 'time'];
+
+/** Columns given up first when a table is too narrow for all of them; the
+ * format badge already carries rate and bits. */
+const DROP_ORDER: ColumnId[] = ['bits', 'rate', 'size', 'bitrate', 'rateBits', 'added', 'plays', 'genre', 'year', 'art'];
+/** The least a flexible (title, artist, album) column should get. */
+const FLEX_MIN = 130;
+const ROW_PADDING = 20;
+const COLUMN_GAP = 12;
+
+function fitColumns(columns: ColumnId[], width: number): ColumnId[] {
+  if (width <= 0) return columns;
+  const need = (cols: ColumnId[]) =>
+    ROW_PADDING +
+    (cols.length - 1) * COLUMN_GAP +
+    cols.reduce((sum, c) => sum + (COLUMNS[c].width.endsWith('px') ? parseFloat(COLUMNS[c].width) : FLEX_MIN), 0);
+  let shown = columns;
+  for (const drop of DROP_ORDER) {
+    if (need(shown) <= width) break;
+    shown = shown.filter((c) => c !== drop);
+  }
+  return shown;
+}
+
+/** An element's width, kept current as it resizes. */
+function useWidth<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.clientWidth);
+    const observer = new ResizeObserver(() => setWidth(el.clientWidth));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return { ref, width };
+}
+
+/** Text that ends in an ellipsis when cut off, with the full text on hover. */
+function Text({ text, className }: { text: string; className?: string }) {
+  return (
+    <span className={['el block', className].filter(Boolean).join(' ')} data-tip={text} data-tip-overflow="">
+      {text}
+    </span>
+  );
+}
+
+const UNREADABLE = 'MatrixPlayer could not read this file’s tags or audio details. It may not play.';
+
+/** The title, flagged when the file could not be read, and followed by the
+ * file name when another file in the same album has the same title. */
+function Title({ row, duplicate }: { row: TrackRow; duplicate?: boolean }) {
+  if (!row.unreadable && !duplicate) return <Text text={row.title} className="tt" />;
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      {row.unreadable && (
+        <span className="flex-none" style={{ color: 'var(--warn)' }} data-tip={UNREADABLE} aria-label={UNREADABLE}>
+          <Icon name="warn" size={13} />
+        </span>
+      )}
+      <Text text={row.title} className="tt min-w-0 flex-shrink" />
+      {duplicate && <Text text={row.fileName} className="mono t3 min-w-0 max-w-[55%] flex-none text-[10.5px]" />}
+    </span>
+  );
+}
 export const ALBUM_COLUMNS: ColumnId[] = ['num', 'title', 'heart', 'format', 'rateBits', 'bitrate', 'size', 'time', 'more'];
 export const LIST_COLUMNS: ColumnId[] = ['index', 'art', 'titleArtist', 'album', 'format', 'heart', 'time', 'more'];
 
-function cell(id: ColumnId, row: TrackRow, index: number, favorite: boolean): ReactNode {
+function cell(id: ColumnId, row: TrackRow, index: number, favorite: boolean, duplicate: boolean): ReactNode {
   switch (id) {
     case 'num':
       return row.trackNumber ?? '';
@@ -83,22 +159,22 @@ function cell(id: ColumnId, row: TrackRow, index: number, favorite: boolean): Re
     case 'art':
       return <Artwork artworkId={row.artworkId} size={24} radius={2} title={row.album ?? row.title} />;
     case 'title':
-      return <span className="tt el">{row.title}</span>;
+      return <Title row={row} duplicate={duplicate} />;
     case 'titleArtist':
       return (
         <span className="flex min-w-0 flex-col">
-          <span className="tt el">{row.title}</span>
-          <span className="el t3 text-[11.5px]">{row.artist ?? 'Unknown artist'}</span>
+          <Title row={row} duplicate={duplicate} />
+          <Text text={row.artist ?? 'Unknown artist'} className="t3 text-[11.5px]" />
         </span>
       );
     case 'artist':
-      return <span className="el">{row.artist ?? 'Unknown artist'}</span>;
+      return <Text text={row.artist ?? 'Unknown artist'} />;
     case 'album':
-      return <span className="el">{row.album ?? ''}</span>;
+      return <Text text={row.album ?? ''} />;
     case 'year':
       return row.year ?? '';
     case 'genre':
-      return <span className="el">{row.genre ?? ''}</span>;
+      return <Text text={row.genre ?? ''} />;
     case 'format':
       return <span className={badgeClass(row)}>{trackBadge(row)}</span>;
     case 'rate':
@@ -147,13 +223,14 @@ interface RowProps {
   selectEdge: string;
   playing: 'playing' | 'paused' | null;
   favorite: boolean;
+  duplicate: boolean;
   focused: boolean;
   onPointer: (index: number, e: MouseEvent) => void;
   onPlay: (index: number) => void;
   onMenu: (index: number, e: MouseEvent) => void;
 }
 
-const Row = memo(function Row({ row, index, columns, template, selected, selectEdge, playing, favorite, focused, onPointer, onPlay, onMenu }: RowProps) {
+const Row = memo(function Row({ row, index, columns, template, selected, selectEdge, playing, favorite, duplicate, focused, onPointer, onPlay, onMenu }: RowProps) {
   if (!row) {
     return (
       <div className="tr-row tr-skeleton" style={{ gridTemplateColumns: template }} aria-hidden="true">
@@ -211,7 +288,7 @@ const Row = memo(function Row({ row, index, columns, template, selected, selectE
         }
         return (
           <span key={c} className={[col.mono && 'm', col.right && 'text-right', 'min-w-0'].filter(Boolean).join(' ')}>
-            {cell(c, row, index, favorite)}
+            {cell(c, row, index, favorite, duplicate)}
           </span>
         );
       })}
@@ -247,7 +324,7 @@ interface TrackTableProps {
 /** A virtualized, sortable, multi-select list of library tracks. */
 export function TrackTable({
   ids,
-  columns,
+  columns: allColumns,
   sort,
   onSort,
   rowHeight = 32,
@@ -261,6 +338,8 @@ export function TrackTable({
   autoHeight,
   className,
 }: TrackTableProps) {
+  const { ref: wrap, width } = useWidth<HTMLDivElement>();
+  const columns = useMemo(() => fitColumns(allColumns, width), [allColumns, width]);
   const virtual = useVirtualList<HTMLDivElement>(ids.length, rowHeight);
   const list = autoHeight ? { ...virtual, start: 0, end: ids.length, offset: 0 } : virtual;
   const { rows, ensure } = useTrackRows(ids);
@@ -271,6 +350,22 @@ export function TrackTable({
   const status = usePlayer((s) => s.status);
   const favorites = useLibrary((s) => s.favorites);
   const template = useMemo(() => columns.map((c) => COLUMNS[c].width).join(' '), [columns]);
+  // Same title, same album, different file: copies of one track, which
+  // otherwise look identical in the list.
+  const duplicates = useMemo(() => {
+    const first = new Map<string, number>();
+    const found = new Set<number>();
+    for (const r of rows.values()) {
+      const key = `${r.albumId ?? ''}\u0000${r.title.toLowerCase()}`;
+      const other = first.get(key);
+      if (other == null) first.set(key, r.id);
+      else if (other !== r.id) {
+        found.add(other);
+        found.add(r.id);
+      }
+    }
+    return found;
+  }, [rows]);
   const revealed = useRef(false);
 
   useEffect(() => ensure(list.start, list.end), [ensure, list.start, list.end]);
@@ -326,10 +421,13 @@ export function TrackTable({
       }
       const trackIds = at.map((i) => ids[i]!).filter((id) => id != null);
       const loaded = trackIds.map((id) => rows.get(id)).filter((r): r is TrackRow => !!r);
-      const { items, header } = trackMenu(trackIds, loaded, { extra: menuExtra?.(at) });
+      // "Play" on one track does what Enter and double-click do: play the
+      // list from there.
+      const playHere = at.length === 1 ? () => play(at[0]!) : undefined;
+      const { items, header } = trackMenu(trackIds, loaded, { extra: menuExtra?.(at), play: playHere });
       contextMenu(() => items, { header, label: 'Track actions' })(e);
     },
-    [ids, menuExtra, positions, rows, selected],
+    [ids, menuExtra, play, positions, rows, selected],
   );
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -418,6 +516,15 @@ export function TrackTable({
           if (row) void showTrackInfo(row);
         } else handled = false;
         break;
+      case 'o':
+      case 'O': {
+        // Browse folder, as the context menu says; without the handling
+        // here the global Ctrl+Shift+O (open a folder to play) would fire.
+        const row = focus != null ? rows.get(ids[focus]!) : undefined;
+        if (e.ctrlKey && e.shiftKey && row) navigate('folders', row.folderId);
+        else handled = false;
+        break;
+      }
       case 'Delete':
         if (onDelete && chosen.length) onDelete(chosen);
         else handled = false;
@@ -473,6 +580,7 @@ export function TrackTable({
         selectEdge={edge}
         playing={row && row.id === playingId ? (status === 'playing' || status === 'loading' ? 'playing' : 'paused') : null}
         favorite={favorites.has(id)}
+        duplicate={duplicates.has(id)}
         focused={focus === i}
         onPointer={onPointer}
         onPlay={play}
@@ -482,7 +590,7 @@ export function TrackTable({
   }
 
   return (
-    <div className={['tt-wrap', autoHeight && 'auto', className].filter(Boolean).join(' ')}>
+    <div ref={wrap} className={['tt-wrap', autoHeight && 'auto', className].filter(Boolean).join(' ')}>
       <div className="tr-row tr-head" style={{ gridTemplateColumns: template }} role="row">
         {columns.map((c) => {
           const col = COLUMNS[c];

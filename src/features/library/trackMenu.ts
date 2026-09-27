@@ -46,6 +46,9 @@ export function playlistSubmenu(tracks: number[] | (() => Promise<number[]>)): M
 interface TrackMenuOptions {
   /** Extra items placed after the queue actions (e.g. "Remove from playlist"). */
   extra?: MenuItem[];
+  /** What "Play" does, when it should play more than the chosen tracks
+   * (a list plays from the chosen track on, as Enter does). */
+  play?: () => void;
 }
 
 /** Menu for a selection of tracks; `rows` are the selected rows that are loaded. */
@@ -65,7 +68,7 @@ export function trackMenu(ids: number[], rows: TrackRow[], options: TrackMenuOpt
       : undefined;
 
   const items: MenuItem[] = [
-    { label: 'Play', icon: 'play', filledIcon: true, shortcut: 'Enter', onSelect: () => void playTracks(ids) },
+    { label: 'Play', icon: 'play', filledIcon: true, shortcut: 'Enter', onSelect: () => (options.play ? options.play() : void playTracks(ids)) },
     { label: 'Play next', icon: 'playNext', shortcut: 'Shift+Enter', onSelect: () => void playTracks(ids, 'next', undefined, single?.title) },
     { label: 'Add to queue', icon: 'queue', shortcut: 'Q', onSelect: () => void playTracks(ids, 'append', undefined, single?.title) },
     ...(options.extra ?? []),
