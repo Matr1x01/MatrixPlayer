@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 
 interface SliderProps {
   /** Committed value, 0–1, as reported by the core. */
@@ -24,6 +24,10 @@ interface SliderProps {
 }
 
 const clamp = (v: number) => Math.min(1, Math.max(0, v));
+/** A committed value counts as confirmed once the core reports this close. */
+const SETTLED = 0.015;
+/** …or after this long, whatever the core says. */
+const SETTLE_MS = 1500;
 
 /** Seek and volume slider (Components · B3). */
 export function Slider({
@@ -41,8 +45,23 @@ export function Slider({
   const track = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<number | null>(null);
   const [hover, setHover] = useState<number | null>(null);
+  // The last committed value, shown until the core confirms it: otherwise
+  // the knob jumps back to the old value for the moment a seek takes.
+  const [pending, setPending] = useState<number | null>(null);
+  useEffect(() => {
+    if (pending != null && Math.abs(value - pending) < SETTLED) setPending(null);
+  }, [value, pending]);
+  useEffect(() => {
+    if (pending == null) return;
+    const timer = window.setTimeout(() => setPending(null), SETTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [pending]);
+  const commit = (v: number) => {
+    setPending(v);
+    onCommit(v);
+  };
 
-  const shown = clamp(drag ?? value);
+  const shown = clamp(drag ?? pending ?? value);
   const fractionAt = (clientX: number) => {
     const rect = track.current!.getBoundingClientRect();
     return rect.width > 0 ? clamp((clientX - rect.left) / rect.width) : 0;
@@ -68,18 +87,21 @@ export function Slider({
     if (drag == null) return;
     const f = fractionAt(e.clientX);
     setDrag(null);
-    onCommit(f);
+    commit(f);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     // Modified arrows are global shortcuts (Ctrl+→ next track…).
     if (disabled || e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
+    // Repeated key presses step from what is shown, not from a value the
+    // core has not confirmed yet.
+    const from = pending ?? value;
     const moves: Record<string, number> = {
-      ArrowRight: value + step,
-      ArrowUp: value + step,
-      ArrowLeft: value - step,
-      ArrowDown: value - step,
-      PageUp: value + step * 5,
-      PageDown: value - step * 5,
+      ArrowRight: from + step,
+      ArrowUp: from + step,
+      ArrowLeft: from - step,
+      ArrowDown: from - step,
+      PageUp: from + step * 5,
+      PageDown: from - step * 5,
       Home: 0,
       End: 1,
     };
@@ -87,7 +109,7 @@ export function Slider({
     if (next === undefined) return;
     e.preventDefault();
     e.stopPropagation();
-    onCommit(clamp(next));
+    commit(clamp(next));
   };
 
   const hot = !disabled && (hover != null || drag != null);

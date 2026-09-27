@@ -6,7 +6,7 @@ import { usePlayer } from '@/stores/player';
 import { run } from '@/stores/toasts';
 
 import { formatTime } from './format';
-import { isSeekable } from './hooks';
+import { isSeekable, useSeekTarget } from './hooks';
 
 /**
  * Position readout and seek slider for the player bar, driven by core
@@ -19,10 +19,11 @@ export function SeekBar() {
   // While dragging, the readout follows the pointer; the core is only asked
   // to seek on release.
   const [scrubMs, setScrubMs] = useState<number | null>(null);
+  const [sentMs, setSentMs] = useSeekTarget(positionMs);
 
   const duration = durationMs ?? 0;
   const enabled = duration > 0 && isSeekable(status);
-  const shownMs = scrubMs ?? positionMs;
+  const shownMs = scrubMs ?? sentMs ?? positionMs;
   const fraction = duration > 0 ? Math.min(1, positionMs / duration) : 0;
 
   const slider = (
@@ -36,6 +37,7 @@ export function SeekBar() {
       onInput={(f) => setScrubMs(f * duration)}
       onCommit={(f) => {
         setScrubMs(null);
+        setSentMs(f * duration);
         void run(playerApi.seek(f * duration));
       }}
     />
