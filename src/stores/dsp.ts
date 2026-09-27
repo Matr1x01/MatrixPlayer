@@ -62,12 +62,16 @@ export function activeCurve(settings: DspSettings): EqCurve {
   return settings.slot === 'a' ? settings.a : settings.b;
 }
 
-/** Changes the active slot's curve. */
+/**
+ * Changes the active slot's curve. Shaping the curve means wanting to hear
+ * it, so an edit switches the EQ on and leaves bypass.
+ */
 export function patchCurve(patch: Partial<EqCurve>) {
   const current = useDsp.getState().settings;
   if (!current) return;
   const curve = { ...activeCurve(current), ...patch };
-  setDsp(current.slot === 'a' ? { ...current, a: curve } : { ...current, b: curve });
+  const next = { ...current, eqEnabled: true, bypass: false };
+  setDsp(current.slot === 'a' ? { ...next, a: curve } : { ...next, b: curve });
 }
 
 export function applyState(state: DspState) {

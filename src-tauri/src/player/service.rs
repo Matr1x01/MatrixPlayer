@@ -66,7 +66,9 @@ pub const OUTPUT_DEVICE_KEY: &str = "player.output_device";
 impl PlayerSettings {
     pub async fn load(db: &Database) -> Self {
         Self {
-            volume: settings::get(db, "player.volume").await.ok().flatten().unwrap_or(0.8),
+            // Unity: the system volume is the one people set; a lower
+            // default made every track quieter than in other players.
+            volume: settings::get(db, "player.volume").await.ok().flatten().unwrap_or(1.0),
             muted: settings::get(db, "player.muted").await.ok().flatten().unwrap_or(false),
             repeat: settings::get(db, "player.repeat").await.ok().flatten().unwrap_or_default(),
             shuffle: settings::get(db, "player.shuffle").await.ok().flatten().unwrap_or(false),
@@ -1214,6 +1216,92 @@ mod tests {
 
         h.player.command(PlayerCommand::Play).await.unwrap();
         wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+    }
+
+    /// When each buffer reached the output, and its peak level.
+    type Heard = Arc<std::sync::Mutex<Vec<(std::time::Instant, f64)>>>;
+
+    /// A fake output that records what it renders and when.
+    fn listening_output() -> (Output, Heard) {
+        use gstreamer::prelude::*;
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = gstreamer::ElementFactory::make("fakesink")
+            .name("matrixplayer-output")
+            .property("sync", true)
+            .property("signal-handoffs", true)
+            .build()
+            .unwrap();
+        let log = heard.clone();
+        sink.connect("handoff", false, move |args| {
+            let buffer = args[1].get::<gstreamer::Buffer>().ok()?;
+            let map = buffer.map_readable().ok()?;
+            let peak = map
+                .as_slice()
+                .chunks_exact(8)
+                .map(|b| f64::from_ne_bytes(b.try_into().unwrap()).abs())
+                .fold(0.0, f64::max);
+            log.lock().unwrap().push((std::time::Instant::now(), peak));
+            None
+        });
+        let output = Output { sink, backend: crate::audio::OutputBackend::Auto, device: None };
+        (output, heard)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resuming_after_a_soft_pause_is_heard_at_once() {
+        gstreamer::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (output, heard) = listening_output();
+        let settings = PlayerSettings {
+            volume: 1.0,
+            muted: false,
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            gapless: true,
+            output_device: None,
+        };
+        let (player, service) = PlayerHandle::new(Database::in_memory().await.unwrap(), settings, output).unwrap();
+        tokio::spawn(service);
+        player.dsp().apply(&crate::dsp::settings::DspSettings::default());
+        let mut events = player.subscribe();
+        let artwork = ArtworkStore::new(dir.path().join("art")).unwrap();
+        let a = dir.path().join("a.flac");
+        write_flac(&a, 6.0, "Long");
+        let tracks = vec![Arc::new(TrackInfo::load(&a, &artwork))];
+        player.command(PlayerCommand::Insert { tracks, mode: InsertMode::Replace, start: 0 }).await.unwrap();
+        wait_for(&mut events, is_status(PlaybackStatus::Playing)).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        let steady = heard.lock().unwrap().iter().map(|(_, p)| *p).fold(0.0, f64::max);
+        player.command(PlayerCommand::Pause).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1600)).await;
+        {
+            // The fade must have been heard before the output stopped: the
+            // last buffer out is the tail of the fade, not full-level music
+            // cut off (with nothing but silence left waiting behind it).
+            let heard = heard.lock().unwrap();
+            let last = heard.last().expect("something was rendered").1;
+            assert!(last < steady * 0.25, "the output stopped at {last:.3} of {steady:.3}: the fade was never heard");
+        }
+
+        let resumed = std::time::Instant::now();
+        player.command(PlayerCommand::Play).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let heard = heard.lock().unwrap();
+        let after: Vec<_> = heard.iter().filter(|(t, _)| *t > resumed).collect();
+        let first = after.iter().position(|(_, p)| *p > 0.05).expect("the music comes back after resuming");
+        let delay = after[first].0 - resumed;
+        assert!(delay < Duration::from_millis(350), "music came back after {delay:?}");
+        // Once back, it keeps playing: no stretch of silence behind it.
+        let mut quiet_since = None;
+        for (t, p) in &after[first..] {
+            if *p > 0.05 {
+                quiet_since = None;
+            } else {
+                let since = *quiet_since.get_or_insert(*t);
+                assert!(*t - since < Duration::from_millis(120), "silent for {:?} after resuming", *t - since);
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

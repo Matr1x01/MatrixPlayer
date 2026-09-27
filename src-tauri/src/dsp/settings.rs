@@ -167,9 +167,19 @@ pub enum AbSlot {
     B,
 }
 
+/// Bumped when a default changes in a way saved settings must follow.
+pub const SETTINGS_VERSION: u32 = 2;
+
+fn legacy_version() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DspSettings {
+    /// Format of these settings; missing in the first saved format.
+    #[serde(default = "legacy_version")]
+    pub version: u32,
     pub eq_enabled: bool,
     /// Compare slot in use; `bypass` hears the unequalized signal.
     pub slot: AbSlot,
@@ -188,7 +198,8 @@ pub struct DspSettings {
     pub crossfeed: bool,
     pub replay_gain: ReplayGainMode,
     pub replay_gain_preamp_db: f64,
-    /// Gain for files without ReplayGain tags while ReplayGain is on.
+    /// Gain for files without ReplayGain tags while ReplayGain is on. 0 dB
+    /// plays them as mastered, as other players do.
     pub replay_gain_fallback_db: f64,
     pub clipping_prevention: bool,
     pub soft_fades: bool,
@@ -198,6 +209,7 @@ pub struct DspSettings {
 impl Default for DspSettings {
     fn default() -> Self {
         Self {
+            version: SETTINGS_VERSION,
             eq_enabled: false,
             slot: AbSlot::A,
             bypass: false,
@@ -211,7 +223,7 @@ impl Default for DspSettings {
             crossfeed: false,
             replay_gain: ReplayGainMode::Album,
             replay_gain_preamp_db: 0.0,
-            replay_gain_fallback_db: -8.0,
+            replay_gain_fallback_db: 0.0,
             clipping_prevention: true,
             soft_fades: true,
             dither: false,
@@ -220,6 +232,20 @@ impl Default for DspSettings {
 }
 
 impl DspSettings {
+    /// Brings settings saved by an older version up to date. Only values
+    /// still at an old default change; anything the user chose is kept.
+    pub fn migrate(mut self) -> Self {
+        if self.version < 2 {
+            // Version 1 played untagged files 8 dB down, which made them
+            // sound quieter than in any other player.
+            if self.replay_gain_fallback_db == -8.0 {
+                self.replay_gain_fallback_db = 0.0;
+            }
+        }
+        self.version = SETTINGS_VERSION;
+        self
+    }
+
     pub fn sanitize(mut self) -> Self {
         self.a.sanitize();
         self.b.sanitize();
@@ -227,7 +253,7 @@ impl DspSettings {
         self.balance = finite_or(self.balance, 0.0).clamp(-1.0, 1.0);
         self.width = finite_or(self.width, 1.0).clamp(0.0, 2.0);
         self.replay_gain_preamp_db = finite_or(self.replay_gain_preamp_db, 0.0).clamp(-15.0, 15.0);
-        self.replay_gain_fallback_db = finite_or(self.replay_gain_fallback_db, -8.0).clamp(-24.0, 6.0);
+        self.replay_gain_fallback_db = finite_or(self.replay_gain_fallback_db, 0.0).clamp(-24.0, 6.0);
         if let Some(name) = &mut self.preset {
             name.truncate(100);
         }
@@ -313,6 +339,19 @@ mod tests {
         curve.mode = EqMode::Graphic31;
         curve.graphic31[10] = -2.0;
         assert_eq!(curve.filters().len(), 2);
+    }
+
+    #[test]
+    fn migrating_moves_only_old_defaults() {
+        let old: DspSettings = serde_json::from_str(r#"{"replayGainFallbackDb":-8}"#).unwrap();
+        assert_eq!(old.version, 1);
+        let migrated = old.migrate();
+        assert_eq!((migrated.version, migrated.replay_gain_fallback_db), (SETTINGS_VERSION, 0.0));
+
+        let chosen: DspSettings = serde_json::from_str(r#"{"replayGainFallbackDb":-6}"#).unwrap();
+        assert_eq!(chosen.migrate().replay_gain_fallback_db, -6.0, "a user's own value stays");
+        let current: DspSettings = serde_json::from_str(r#"{"version":2,"replayGainFallbackDb":-8}"#).unwrap();
+        assert_eq!(current.migrate().replay_gain_fallback_db, -8.0, "chosen after the change: kept");
     }
 
     #[test]
