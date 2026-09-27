@@ -16,6 +16,9 @@
     font-weight: 600;
   }
   .t2 { color: var(--tx2); }
+  /* Inline text that navigates (an artist or album name in running text). */
+  .link { color: inherit; font: inherit; }
+  .link:hover { color: var(--tx); text-decoration: underline; text-underline-offset: 2px; }
   .t3 { color: var(--tx3); }
   .el {
     white-space: nowrap;

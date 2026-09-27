@@ -12,7 +12,7 @@ import { FavoriteButton } from '@/features/player/PlayerBar';
 import { Transport } from '@/features/player/Transport';
 import { VolumeControl } from '@/features/player/VolumeControl';
 import { useDsp } from '@/stores/dsp';
-import { useNavigation } from '@/stores/navigation';
+import { useNavigation, useRoute } from '@/stores/navigation';
 import { usePlayer } from '@/stores/player';
 import type { TrackInfo } from '@/types/player';
 
@@ -81,9 +81,12 @@ function EqButton({ onOpen }: { onOpen: () => void }) {
 export function NowPlayingView() {
   const track = usePlayer((s) => s.track);
   const navigate = useNavigation((s) => s.navigate);
-  const [tab, setTab] = useState<SideTab>('next');
+  // Opened on a tab (the player bar's lyrics button): show it, even where
+  // the side panel is a drawer.
+  const initial = useRoute().tab as SideTab | undefined;
+  const [tab, setTab] = useState<SideTab>(initial ?? 'next');
   // Below 1100 px the side panel is a drawer (Responsive board).
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(initial != null);
   const showTab = (next: SideTab) => {
     setTab(next);
     setDrawerOpen(true);

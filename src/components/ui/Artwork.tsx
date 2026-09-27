@@ -94,7 +94,10 @@ export function Artwork({ artwork, artworkId, size, radius, title = '', full, cl
       role="img"
       aria-label={title ? `No artwork for ${title}` : 'No artwork'}
     >
-      {compact ? (
+      {compact && !title ? (
+        // Nothing to name (nothing playing): a note, not a "?".
+        <Icon name="note" size={Math.max(12, Math.round((size ?? 32) * 0.36))} style={{ opacity: 0.55 }} />
+      ) : compact ? (
         <span className="mg" style={{ fontSize: Math.max(10, Math.round((size ?? 32) * 0.36)) }}>
           {monogram(title)}
         </span>
