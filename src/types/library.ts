@@ -215,6 +215,10 @@ export interface FolderDetail {
   albumCount: number;
   lastScanAt: number | null;
   tagged: number;
+  /** Tracks, bytes and playing time here and in every folder below. */
+  totalTracks: number;
+  totalSize: number;
+  totalDurationMs: number;
 }
 
 export type TrackSort =

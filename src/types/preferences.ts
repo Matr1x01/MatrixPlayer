@@ -17,6 +17,8 @@ export interface UiPreferences {
   interfaceScale: number;
   /** Announce new tracks with a desktop notification while in the background. */
   trackNotifications: boolean;
+  /** At startup, bring back the last queue, paused where it was. */
+  restoreSession: boolean;
 }
 
 export type UiPreferencesPatch = Partial<UiPreferences>;

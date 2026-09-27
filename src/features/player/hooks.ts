@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { playerApi } from '@/services/ipc';
 import { usePlayer } from '@/stores/player';
@@ -40,6 +40,24 @@ export function useLiveVolume() {
   }, []);
 
   return { input, commit };
+}
+
+/**
+ * Where a seek was sent, shown until the reported position gets there (or
+ * a moment passes), so the playhead does not jump back while the seek is on
+ * its way to the core.
+ */
+export function useSeekTarget(positionMs: number) {
+  const [target, setTarget] = useState<number | null>(null);
+  useEffect(() => {
+    if (target != null && Math.abs(positionMs - target) < 750) setTarget(null);
+  }, [positionMs, target]);
+  useEffect(() => {
+    if (target == null) return;
+    const timer = window.setTimeout(() => setTarget(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [target]);
+  return [target, setTarget] as const;
 }
 
 /** Cycles repeat off → all → one → off. */

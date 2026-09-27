@@ -72,6 +72,7 @@ function MenuPanel({
   label,
   depth,
   onClose,
+  onDone,
 }: {
   items: MenuItem[];
   header?: MenuHeader;
@@ -79,7 +80,10 @@ function MenuPanel({
   y: number;
   label: string;
   depth: number;
+  /** Closes this level (Escape, or ← in a submenu). */
   onClose: () => void;
+  /** Closes the whole menu, once an item has been chosen. */
+  onDone: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false });
@@ -119,7 +123,8 @@ function MenuPanel({
       openSub(index);
       return;
     }
-    onClose();
+    // Choosing an item ends the whole menu, not just this submenu.
+    onDone();
     item.onSelect?.();
   };
 
@@ -222,6 +227,7 @@ function MenuPanel({
             setSub(null);
             ref.current?.focus();
           }}
+          onDone={onDone}
         />
       )}
     </>
@@ -247,5 +253,5 @@ export function ContextMenuHost(): ReactNode {
     };
   }, [menu]);
   if (!menu) return null;
-  return <MenuPanel key={`${menu.x}:${menu.y}`} {...menu} depth={0} onClose={closeMenu} />;
+  return <MenuPanel key={`${menu.x}:${menu.y}`} {...menu} depth={0} onClose={closeMenu} onDone={closeMenu} />;
 }

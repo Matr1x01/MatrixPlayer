@@ -13,7 +13,9 @@ interface Tip {
 /**
  * One tooltip for the whole app (Components · B7): any element with
  * `data-tip` (and optionally `data-tip-key`) gets a styled tooltip after a
- * 500 ms hover. Delegated, so controls need no wrapper component.
+ * 500 ms hover. Delegated, so controls need no wrapper component. With
+ * `data-tip-overflow`, the tip only shows while the element's own text is
+ * cut off, so it can carry the full text of a truncated cell.
  */
 export function TooltipHost() {
   const [tip, setTip] = useState<Tip | null>(null);
@@ -34,6 +36,7 @@ export function TooltipHost() {
       hide();
       current = el;
       if (!el?.dataset.tip) return;
+      if (el.dataset.tipOverflow !== undefined && el.scrollWidth <= el.clientWidth) return;
       timer = window.setTimeout(() => {
         setTip({ text: el.dataset.tip!, shortcut: el.dataset.tipKey, anchor: el.getBoundingClientRect() });
       }, DELAY_MS);

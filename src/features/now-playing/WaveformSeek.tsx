@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 
 import { formatTime } from '@/features/player/format';
-import { isSeekable } from '@/features/player/hooks';
+import { isSeekable, useSeekTarget } from '@/features/player/hooks';
 import { playerApi } from '@/services/ipc';
 import { usePlayer } from '@/stores/player';
 import { run } from '@/stores/toasts';
@@ -54,11 +54,17 @@ export function WaveformSeek() {
   const area = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [scrub, setScrub] = useState<number | null>(null);
+  const [sentMs, setSentMs] = useSeekTarget(positionMs);
 
   const duration = durationMs ?? 0;
   const enabled = duration > 0 && isSeekable(status);
-  const fraction = scrub ?? (duration > 0 ? Math.min(1, positionMs / duration) : 0);
-  const shownMs = scrub != null ? scrub * duration : positionMs;
+  const heardMs = sentMs ?? positionMs;
+  const fraction = scrub ?? (duration > 0 ? Math.min(1, heardMs / duration) : 0);
+  const shownMs = scrub != null ? scrub * duration : heardMs;
+  const seekTo = (ms: number) => {
+    setSentMs(ms);
+    void run(playerApi.seek(ms));
+  };
 
   const at = (clientX: number) => {
     const r = area.current!.getBoundingClientRect();
@@ -73,14 +79,14 @@ export function WaveformSeek() {
     if (scrub == null) return;
     const f = at(e.clientX);
     setScrub(null);
-    void run(playerApi.seek(f * duration));
+    seekTo(f * duration);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!enabled || e.ctrlKey || e.altKey || e.metaKey) return;
     const step = e.shiftKey ? 30_000 : 5_000;
     const moves: Record<string, number> = {
-      ArrowRight: positionMs + step,
-      ArrowLeft: positionMs - step,
+      ArrowRight: heardMs + step,
+      ArrowLeft: heardMs - step,
       Home: 0,
       End: duration - 1000,
     };
@@ -88,7 +94,7 @@ export function WaveformSeek() {
     if (next === undefined) return;
     e.preventDefault();
     e.stopPropagation();
-    void run(playerApi.seek(Math.max(0, Math.min(duration, next))));
+    seekTo(Math.max(0, Math.min(duration, next)));
   };
 
   const played = Math.round(fraction * BARS);

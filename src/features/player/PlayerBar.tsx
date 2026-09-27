@@ -26,8 +26,11 @@ function CurrentTrack() {
     );
   }
 
-  const { metadata, properties } = track;
+  const { metadata, properties, library } = track;
   const openNowPlaying = () => navigate('nowPlaying');
+  const artist = metadata.artist ?? 'Unknown artist';
+  const artistId = library?.artistId ?? null;
+  const albumId = library?.albumId ?? null;
   return (
     <div className="flex min-w-0 items-center gap-3">
       <button type="button" aria-label="Open Now Playing" onClick={openNowPlaying} className="rounded-[4px]">
@@ -37,7 +40,27 @@ function CurrentTrack() {
         <button type="button" className="el text-left text-[14px] font-semibold" onClick={openNowPlaying}>
           {metadata.title}
         </button>
-        <div className="el t2 text-[12px]">{artistAlbum(track)}</div>
+        <div className="el t2 text-[12px]" title={artistAlbum(track)}>
+          {artistId != null ? (
+            <button type="button" className="link" onClick={() => navigate('artists', artistId)}>
+              {artist}
+            </button>
+          ) : (
+            artist
+          )}
+          {metadata.album && (
+            <>
+              {' · '}
+              {albumId != null ? (
+                <button type="button" className="link" onClick={() => navigate('album', albumId)}>
+                  {metadata.album}
+                </button>
+              ) : (
+                metadata.album
+              )}
+            </>
+          )}
+        </div>
         <div className="mt-0.5 flex gap-[5px] overflow-hidden">
           <span className={isHiRes(properties) ? 'chip hr' : 'chip'}>{formatBadge(properties)}</span>
           {properties.bitrateKbps != null && <span className="chip">{formatKbps(properties.bitrateKbps)}</span>}
@@ -74,6 +97,7 @@ export function FavoriteButton({ size, iconSize = 17 }: { size?: number; iconSiz
 export function PlayerBar() {
   const view = useView();
   const navigate = useNavigation((s) => s.navigate);
+  const hasTrack = usePlayer((s) => s.track != null);
 
   return (
     <footer className="pb">
@@ -86,7 +110,7 @@ export function PlayerBar() {
         <span className="pb-output">
           <OutputButton />
         </span>
-        <IconButton icon="lyrics" label="Lyrics (not available yet)" iconSize={17} disabled />
+        <IconButton icon="lyrics" label="Lyrics" iconSize={17} disabled={!hasTrack} onClick={() => navigate('nowPlaying', undefined, 'lyrics')} />
         <IconButton
           icon="queue"
           label="Queue"

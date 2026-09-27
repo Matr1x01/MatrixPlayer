@@ -1,9 +1,9 @@
 // The track context menu (Songs table board) and the actions behind it,
 // shared by every list of library tracks.
 
-import { askText } from '@/components/ui/Dialog';
+import { askChoice, askText } from '@/components/ui/Dialog';
 import type { MenuHeader, MenuItem } from '@/components/ui/ContextMenu';
-import { playlistApi } from '@/services/ipc';
+import { libraryApi, playlistApi } from '@/services/ipc';
 import { setFavorite, useLibrary } from '@/stores/library';
 import { navigate } from '@/stores/navigation';
 import { run, showToast } from '@/stores/toasts';
@@ -21,7 +21,34 @@ export async function addToNewPlaylist(ids: number[]) {
 }
 
 export async function addToPlaylist(playlistId: number, name: string, ids: number[]) {
-  const added = await run(playlistApi.add(playlistId, ids));
+  // Adding what is already there is usually a slip: ask before doubling up.
+  const existing = await run(libraryApi.trackList({ scope: { kind: 'playlist', id: playlistId } }));
+  if (!existing) return;
+  const present = new Set(existing.ids);
+  const fresh = ids.filter((id) => !present.has(id));
+  let chosen = ids;
+  if (fresh.length < ids.length) {
+    const already = ids.length - fresh.length;
+    const choice = await askChoice({
+      title: fresh.length === 0 ? `Already in “${name}”` : `Some are already in “${name}”`,
+      body:
+        fresh.length === 0
+          ? ids.length === 1
+            ? 'This track is already in the playlist. Add it again?'
+            : `All ${ids.length} tracks are already in the playlist. Add them again?`
+          : `${already} of these ${ids.length} tracks ${already === 1 ? 'is' : 'are'} already in the playlist.`,
+      choices:
+        fresh.length === 0
+          ? [{ label: 'Add again', value: 'all' }]
+          : [
+              { label: 'Add all', value: 'all' },
+              { label: `Add ${plural(fresh.length, 'new track')}`, value: 'new' },
+            ],
+    });
+    if (choice == null) return;
+    chosen = choice === 'all' ? ids : fresh;
+  }
+  const added = await run(playlistApi.add(playlistId, chosen));
   if (added) showToast({ tone: 'info', message: `Added ${plural(added, 'track')} to “${name}”` });
 }
 
@@ -46,6 +73,9 @@ export function playlistSubmenu(tracks: number[] | (() => Promise<number[]>)): M
 interface TrackMenuOptions {
   /** Extra items placed after the queue actions (e.g. "Remove from playlist"). */
   extra?: MenuItem[];
+  /** What "Play" does, when it should play more than the chosen tracks
+   * (a list plays from the chosen track on, as Enter does). */
+  play?: () => void;
 }
 
 /** Menu for a selection of tracks; `rows` are the selected rows that are loaded. */
@@ -65,9 +95,9 @@ export function trackMenu(ids: number[], rows: TrackRow[], options: TrackMenuOpt
       : undefined;
 
   const items: MenuItem[] = [
-    { label: 'Play', icon: 'play', filledIcon: true, shortcut: 'Enter', onSelect: () => void playTracks(ids) },
-    { label: 'Play next', icon: 'playNext', shortcut: 'Shift+Enter', onSelect: () => void playTracks(ids, 'next') },
-    { label: 'Add to queue', icon: 'queue', shortcut: 'Q', onSelect: () => void playTracks(ids, 'append') },
+    { label: 'Play', icon: 'play', filledIcon: true, shortcut: 'Enter', onSelect: () => (options.play ? options.play() : void playTracks(ids)) },
+    { label: 'Play next', icon: 'playNext', shortcut: 'Shift+Enter', onSelect: () => void playTracks(ids, 'next', undefined, single?.title) },
+    { label: 'Add to queue', icon: 'queue', shortcut: 'Q', onSelect: () => void playTracks(ids, 'append', undefined, single?.title) },
     ...(options.extra ?? []),
     'separator',
     { label: 'Add to playlist', icon: 'playlist', submenu: playlistSubmenu(ids) },

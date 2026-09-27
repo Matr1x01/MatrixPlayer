@@ -87,7 +87,7 @@ export function AlbumView({ id }: { id: number }) {
                 <Icon name="shuffle" size={16} />
                 Shuffle
               </button>
-              <button type="button" className="btn h36" onClick={() => void playTracks(ids, 'append')}>
+              <button type="button" className="btn h36" onClick={() => void playTracks(ids, 'append', undefined, album.title)}>
                 <Icon name="playNext" size={16} />
                 Add to queue
               </button>

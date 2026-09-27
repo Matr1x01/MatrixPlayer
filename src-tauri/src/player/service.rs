@@ -29,6 +29,9 @@ const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 const PERSIST_INTERVAL: Duration = Duration::from_secs(2);
 /// The longest a soft pause waits for its fade to become audible.
 const MAX_FADE_WAIT: Duration = Duration::from_millis(900);
+/// While skipping a run of files that cannot play, each of the first few is
+/// reported on its own; the rest are summed up in one error.
+const REPORTED_PER_RUN: usize = 3;
 
 pub const SESSION_KEY: &str = "player.session";
 
@@ -119,6 +122,9 @@ pub enum PlayerCommand {
         position: Duration,
     },
     ClearQueue,
+    /// Puts back the queue as it was before the last time it was replaced
+    /// or cleared, at the same track and position.
+    UndoQueue,
 }
 
 /// Messages the service sends itself from timers.
@@ -198,6 +204,29 @@ enum Intent {
     Stop,
 }
 
+/// Which way playback last moved through the queue, so a file that cannot
+/// play is skipped in the same direction ("previous" keeps going back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Forward,
+    Backward,
+}
+
+/// Failures met while skipping to something playable.
+#[derive(Default)]
+struct SkipRun {
+    failed: usize,
+    /// An entry's failed flag changed, so the queue needs re-sending.
+    changed: bool,
+}
+
+/// The queue before it was replaced or cleared, for [`PlayerCommand::UndoQueue`].
+struct Undo {
+    queue: Queue,
+    position: Duration,
+    intent: Intent,
+}
+
 struct Player {
     engine: AudioEngine,
     dsp: Arc<DspControl>,
@@ -234,6 +263,8 @@ struct Player {
     /// Failures since the last track that played, to stop skipping through
     /// a queue in which nothing is playable.
     failures: usize,
+    direction: Direction,
+    undo: Option<Undo>,
     decoded: Option<StreamFormat>,
     output: Option<StreamFormat>,
 }
@@ -275,6 +306,8 @@ impl Player {
             fade_token: 0,
             error: None,
             failures: 0,
+            direction: Direction::Forward,
+            undo: None,
             decoded: None,
             output: None,
         };
@@ -383,6 +416,7 @@ impl Player {
             PlayerCommand::PlayEntry(id) => {
                 self.queue.jump_to(id).ok_or_else(|| AppError::InvalidArgument("no such queue entry".into()))?;
                 self.failures = 0;
+                self.direction = Direction::Forward;
                 self.load_current(true)
             }
             PlayerCommand::RemoveEntry(id) => self.remove(id),
@@ -394,9 +428,11 @@ impl Player {
                 Ok(())
             }
             PlayerCommand::Restore { tracks, start, position } => {
+                self.save_undo();
                 self.queue.insert(tracks, InsertMode::Replace, start);
                 self.emit_queue();
                 self.failures = 0;
+                self.direction = Direction::Forward;
                 let seek = (position > Duration::from_secs(1)).then_some((position, false));
                 self.load_current_at(false, seek)
             }
@@ -407,6 +443,7 @@ impl Player {
                 Ok(())
             }
             PlayerCommand::ClearQueue => {
+                self.save_undo();
                 self.queue.clear();
                 self.engine.stop()?;
                 self.engine_state = EngineState::Ready;
@@ -422,6 +459,45 @@ impl Player {
                 self.refresh_status();
                 Ok(())
             }
+            PlayerCommand::UndoQueue => self.undo(),
+        }
+    }
+
+    /// Keeps the queue as it is now, so a replace or clear can be undone.
+    fn save_undo(&mut self) {
+        if self.queue.len() == 0 {
+            return;
+        }
+        let position = if self.loading { self.position } else { self.engine.position().unwrap_or(self.position) };
+        self.undo = Some(Undo { queue: self.queue.clone(), position, intent: self.intent });
+    }
+
+    fn undo(&mut self) -> AppResult<()> {
+        let Undo { mut queue, position, intent } =
+            self.undo.take().ok_or_else(|| AppError::InvalidArgument("there is nothing to undo".into()))?;
+        // Modes are the user's current choice, not part of what is undone.
+        queue.set_repeat(self.queue.repeat());
+        queue.set_shuffle(self.queue.shuffle());
+        self.queue = queue;
+        self.emit_queue();
+        self.failures = 0;
+        self.direction = Direction::Forward;
+        if self.queue.current().is_none() {
+            return Ok(());
+        }
+        let resume_at = (position > Duration::from_secs(1)).then_some(position);
+        match intent {
+            Intent::Stop => {
+                self.intent = Intent::Stop;
+                self.engine.stop()?;
+                self.engine_state = EngineState::Ready;
+                self.switch_to_current()
+            }
+            Intent::Pause => self.load_current_at(false, resume_at.map(|p| (p, false))),
+            Intent::Play => match resume_at {
+                Some(p) => self.load_current_at(false, Some((p, true))),
+                None => self.load_current(true),
+            },
         }
     }
 
@@ -558,6 +634,7 @@ impl Player {
             return Ok(());
         }
         self.failures = 0;
+        self.direction = Direction::Forward;
         self.switch_to_current()
     }
 
@@ -570,6 +647,7 @@ impl Player {
             return if loaded { self.seek(Duration::ZERO) } else { Ok(()) };
         }
         self.failures = 0;
+        self.direction = Direction::Backward;
         self.switch_to_current()
     }
 
@@ -588,10 +666,14 @@ impl Player {
 
     fn insert(&mut self, tracks: Vec<Arc<TrackInfo>>, mode: InsertMode, start: usize) -> AppResult<()> {
         let had_current = self.queue.current().is_some();
+        if mode == InsertMode::Replace && !tracks.is_empty() {
+            self.save_undo();
+        }
         self.queue.insert(tracks, mode, start);
         self.emit_queue();
         if mode == InsertMode::Replace || !had_current {
             self.failures = 0;
+            self.direction = Direction::Forward;
             return self.load_current(true);
         }
         self.update_next();
@@ -643,14 +725,29 @@ impl Player {
     }
 
     /// Loads the current entry; with `seek`, it opens paused, seeks, and
-    /// then plays if the seek says so.
+    /// then plays if the seek says so. A file that cannot be opened is
+    /// reported (and skipped, if playing) like any playback error.
     fn load_current_at(&mut self, play: bool, seek: Option<(Duration, bool)>) -> AppResult<()> {
+        if let Err(err) = self.try_load_current(play, seek) {
+            self.on_error(err);
+        }
+        Ok(())
+    }
+
+    /// [`Self::load_current_at`] without the error handling: returns why the
+    /// current entry could not be opened.
+    fn try_load_current(&mut self, play: bool, seek: Option<(Duration, bool)>) -> Result<(), EngineError> {
         self.pending_seek = seek;
         self.play_after_seek = false;
         let Some(track) = self.queue.current().map(|e| e.track.clone()) else {
             return Ok(());
         };
-        let uri = filesystem::path_to_uri(&track.path)?;
+        let uri = filesystem::path_to_uri(&track.path).map_err(|e| EngineError {
+            kind: EngineErrorKind::NotFound,
+            message: e.to_string(),
+            detail: None,
+            uri: None,
+        })?;
         self.intent = if play { Intent::Play } else { Intent::Pause };
         self.cancel_fade();
         self.dsp.fade(1.0, 0.0);
@@ -661,21 +758,24 @@ impl Player {
         self.decoded = None;
         self.output = None;
 
-        let loaded = self.engine.load(&uri, self.next_uri(), play);
+        // Checked here rather than left to GStreamer: a missing file fails
+        // the pipeline's state change, and costs a reset to recover from.
+        let loaded = if track.path.exists() {
+            self.engine.load(&uri, self.next_uri(), play)
+        } else {
+            Err(EngineError {
+                kind: EngineErrorKind::NotFound,
+                message: "The file could not be found".into(),
+                detail: Some(track.display_path.clone()),
+                uri: Some(uri),
+            })
+        };
         self.engine_state = EngineState::Ready;
         self.emit_track();
         self.emit_queue_state();
         self.emit_position();
         self.emit_signal();
-        if let Err(err) = loaded {
-            self.on_error(EngineError {
-                kind: EngineErrorKind::Other,
-                message: err.to_string(),
-                detail: None,
-                uri: Some(uri),
-            });
-            return Err(err);
-        }
+        loaded?;
         self.refresh_status();
         Ok(())
     }
@@ -706,6 +806,11 @@ impl Player {
                 if self.loading && reached {
                     self.loading = false;
                     self.error = None;
+                    if let Some(id) = self.queue.current().map(|e| e.id)
+                        && self.queue.set_failed(id, false)
+                    {
+                        self.emit_queue();
+                    }
                 }
                 if state == EngineState::Playing {
                     self.failures = 0;
@@ -817,38 +922,102 @@ impl Player {
     }
 
     fn on_error(&mut self, err: EngineError) {
+        self.loading = false;
+        self.seeking = false;
+        self.pending_seek = None;
+        // Release the failed stream (and the output) entirely before trying
+        // anything else; whatever it still posts is marked stale.
+        self.engine.recover();
+        self.engine_state = EngineState::Null;
+
+        // A continuation queued gaplessly failed while the track before it
+        // was still current: step onto the failed entry, so it is marked and
+        // skipped rather than tried again.
+        let current_uri = self.queue.current().and_then(|e| filesystem::path_to_uri(&e.track.path).ok());
+        let next_uri = self.queue.peek_auto_next().and_then(|e| filesystem::path_to_uri(&e.track.path).ok());
+        if err.uri.is_some() && err.uri != current_uri && err.uri == next_uri {
+            self.queue.advance_auto();
+            self.emit_track();
+            self.emit_queue_state();
+        }
+
+        let recoverable = err.kind != EngineErrorKind::OutputUnavailable;
+        let mut run = SkipRun::default();
+        self.report_failure(err, &mut run);
+        if recoverable && self.intent == Intent::Play && self.skip_to_playable(&mut run) {
+            self.finish_run(&run);
+            return;
+        }
+        self.finish_run(&run);
+        self.intent = Intent::Stop;
+        self.position = Duration::ZERO;
+        self.emit_position();
+        self.refresh_status();
+    }
+
+    /// Moves past entries that cannot play, in the direction playback was
+    /// going, until one opens. Returns whether one did. Iterative, so a
+    /// queue full of missing files (an unplugged drive) cannot overflow the
+    /// stack.
+    fn skip_to_playable(&mut self, run: &mut SkipRun) -> bool {
+        while self.failures < self.queue.len() {
+            let moved = match self.direction {
+                Direction::Forward => self.queue.advance().is_some(),
+                // Nothing playable further back: go forward from here.
+                Direction::Backward => self.queue.retreat().is_some() || {
+                    self.direction = Direction::Forward;
+                    self.queue.advance().is_some()
+                },
+            };
+            if !moved {
+                return false;
+            }
+            match self.try_load_current(true, None) {
+                Ok(()) => return true,
+                Err(err) => {
+                    // A failed load has already taken the pipeline down; a
+                    // missing file never reached it.
+                    self.engine_state = EngineState::Null;
+                    self.report_failure(err, run);
+                }
+            }
+        }
+        false
+    }
+
+    /// Counts a failure, flags the entry, and reports it unless this run
+    /// has already reported enough.
+    fn report_failure(&mut self, err: EngineError, run: &mut SkipRun) {
+        self.failures += 1;
+        if let Some(id) = self.queue.current().map(|e| e.id) {
+            run.changed |= self.queue.set_failed(id, true);
+        }
         let error = PlayerError {
             kind: err.kind,
             message: err.message,
             detail: err.detail,
             file_name: err.uri.as_deref().and_then(file_name_from_uri),
         };
-        self.emit(PlayerEvent::Error(error.clone()));
+        run.failed += 1;
+        if run.failed <= REPORTED_PER_RUN {
+            self.emit(PlayerEvent::Error(error.clone()));
+        }
         self.error = Some(error);
-        self.loading = false;
-        self.seeking = false;
-        if let Err(e) = self.engine.stop() {
-            log::error!("could not stop after a playback error: {e}");
-        }
-        self.engine_state = EngineState::Ready;
-        self.failures += 1;
+    }
 
-        // Skip past a broken file, as long as some other file might play.
-        let recoverable = err.kind != EngineErrorKind::OutputUnavailable;
-        if recoverable
-            && self.intent == Intent::Play
-            && self.failures < self.queue.len()
-            && self.queue.advance().is_some()
-        {
-            if let Err(e) = self.load_current(true) {
-                log::error!("could not skip to the next track: {e}");
-            }
-            return;
+    fn finish_run(&mut self, run: &SkipRun) {
+        if run.changed {
+            self.emit_queue();
         }
-        self.intent = Intent::Stop;
-        self.position = Duration::ZERO;
-        self.emit_position();
-        self.refresh_status();
+        let unreported = run.failed.saturating_sub(REPORTED_PER_RUN);
+        if unreported > 0 {
+            self.emit(PlayerEvent::Error(PlayerError {
+                kind: EngineErrorKind::Other,
+                message: format!("{unreported} more files could not be played"),
+                detail: None,
+                file_name: None,
+            }));
+        }
     }
 
     // ── state & events ──────────────────────────────────────────────────────
@@ -1137,6 +1306,122 @@ mod tests {
         let error = events.iter().find_map(|e| if let PlayerEvent::Error(err) = e { Some(err) } else { None });
         assert_eq!(error.expect("the broken file is reported").file_name.as_deref(), Some("broken.flac"));
         assert_eq!(track_titles(&events).last().map(String::as_str), Some("Good"));
+    }
+
+    fn errors(events: &[PlayerEvent]) -> Vec<&PlayerError> {
+        events.iter().filter_map(|e| if let PlayerEvent::Error(err) = e { Some(err) } else { None }).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_gone_from_disk_is_skipped_and_the_next_one_plays() {
+        let mut h = harness().await;
+        let (a, gone, c) = (h.dir.path().join("a.flac"), h.dir.path().join("gone.flac"), h.dir.path().join("c.flac"));
+        write_flac(&a, 4.0, "First");
+        write_flac(&gone, 1.0, "Gone");
+        write_flac(&c, 4.0, "Third");
+        h.open(vec![a, gone.clone(), c]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        std::fs::remove_file(&gone).unwrap();
+        h.player.command(PlayerCommand::Next).await.unwrap();
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        let errors = errors(&events);
+        assert_eq!(errors.len(), 1, "only the missing file is reported: {errors:#?}");
+        assert_eq!(errors[0].file_name.as_deref(), Some("gone.flac"));
+        assert_eq!(errors[0].kind, EngineErrorKind::NotFound);
+        let snapshot = h.player.snapshot().await.unwrap();
+        assert_eq!(snapshot.track.unwrap().metadata.title, "Third", "the track after the missing one plays");
+        assert!(snapshot.queue.entries[1].failed, "the missing entry is flagged");
+        assert!(!snapshot.queue.entries[2].failed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_gapless_continuation_gone_from_disk_is_skipped() {
+        let mut h = harness().await;
+        let (a, gone, c) = (h.dir.path().join("a.flac"), h.dir.path().join("gone.flac"), h.dir.path().join("c.flac"));
+        write_flac(&a, 1.0, "First");
+        write_flac(&gone, 1.0, "Gone");
+        write_flac(&c, 0.5, "Third");
+        h.open(vec![a, gone.clone(), c]).await;
+        // Queued as the continuation already; gone before it is reached.
+        std::fs::remove_file(&gone).unwrap();
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Stopped)).await;
+
+        let errors = errors(&events);
+        assert_eq!(errors.len(), 1, "{errors:#?}");
+        assert_eq!(errors[0].file_name.as_deref(), Some("gone.flac"), "the error names the file that is gone");
+        assert_eq!(track_titles(&events).last().map(String::as_str), Some("Third"), "the track after it played");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_that_fails_to_open_does_not_break_the_next_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut h = harness().await;
+        let (a, locked, c) = (h.dir.path().join("a.flac"), h.dir.path().join("locked.flac"), h.dir.path().join("c.flac"));
+        write_flac(&a, 4.0, "First");
+        write_flac(&locked, 1.0, "Locked");
+        write_flac(&c, 4.0, "Third");
+        h.open(vec![a, locked.clone(), c]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        // Unreadable: GStreamer fails the state change itself, which used to
+        // leave the pipeline unable to start the following track too.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        h.player.command(PlayerCommand::Next).await.unwrap();
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let errors = errors(&events);
+        assert!(!errors.is_empty());
+        assert!(errors.iter().all(|e| e.file_name.as_deref() == Some("locked.flac")), "{errors:#?}");
+        assert_eq!(h.player.snapshot().await.unwrap().track.unwrap().metadata.title, "Third");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn previous_skips_back_past_a_broken_file() {
+        let mut h = harness().await;
+        let (a, bad, c) = (h.dir.path().join("a.flac"), h.dir.path().join("bad.flac"), h.dir.path().join("c.flac"));
+        write_flac(&a, 4.0, "First");
+        std::fs::write(&bad, b"not audio").unwrap();
+        write_flac(&c, 4.0, "Third");
+        let tracks = [a, bad, c].iter().map(|p| Arc::new(TrackInfo::load(p, &h.artwork))).collect();
+        h.player.command(PlayerCommand::Insert { tracks, mode: InsertMode::Replace, start: 2 }).await.unwrap();
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        h.player.command(PlayerCommand::Previous).await.unwrap();
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Error(_))).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        let snapshot = h.player.snapshot().await.unwrap();
+        assert_eq!(snapshot.track.unwrap().metadata.title, "First", "previous keeps going back");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replacing_the_queue_can_be_undone() {
+        let mut h = harness().await;
+        let (a, b, c) = (h.dir.path().join("a.flac"), h.dir.path().join("b.flac"), h.dir.path().join("c.flac"));
+        write_flac(&a, 4.0, "First");
+        write_flac(&b, 4.0, "Second");
+        write_flac(&c, 4.0, "Other");
+        h.open(vec![a, b]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        h.open(vec![c]).await;
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Track { track: Some(t) } if t.metadata.title == "Other"))
+            .await;
+        h.player.command(PlayerCommand::UndoQueue).await.unwrap();
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        let snapshot = h.player.snapshot().await.unwrap();
+        let titles: Vec<_> = snapshot.queue.entries.iter().map(|e| e.track.metadata.title.as_str()).collect();
+        assert_eq!(titles, ["First", "Second"]);
+        assert_eq!(snapshot.track.unwrap().metadata.title, "First");
+        assert!(h.player.command(PlayerCommand::UndoQueue).await.is_err(), "undo is used up");
+
+        h.player.command(PlayerCommand::ClearQueue).await.unwrap();
+        assert_eq!(h.player.snapshot().await.unwrap().queue.entries.len(), 0);
+        h.player.command(PlayerCommand::UndoQueue).await.unwrap();
+        assert_eq!(h.player.snapshot().await.unwrap().queue.entries.len(), 2, "a cleared queue comes back");
     }
 
     #[tokio::test(flavor = "multi_thread")]

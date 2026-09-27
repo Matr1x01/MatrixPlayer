@@ -29,6 +29,12 @@ pub async fn queue_clear(state: State<'_, AppState>) -> AppResult<()> {
     state.player.command(PlayerCommand::ClearQueue).await
 }
 
+/// Puts back the queue from before the last replace or clear.
+#[tauri::command]
+pub async fn queue_undo(state: State<'_, AppState>) -> AppResult<()> {
+    state.player.command(PlayerCommand::UndoQueue).await
+}
+
 /// Keeps only the playing track.
 #[tauri::command]
 pub async fn queue_clear_others(state: State<'_, AppState>) -> AppResult<()> {
@@ -88,6 +94,11 @@ pub async fn queue_saved_session(state: State<'_, AppState>) -> AppResult<Option
 /// are read from disk, and anything that no longer exists is left out.
 #[tauri::command]
 pub async fn queue_restore_session(state: State<'_, AppState>) -> AppResult<usize> {
+    restore_session(&state).await
+}
+
+/// [`queue_restore_session`], shared with startup.
+pub async fn restore_session(state: &AppState) -> AppResult<usize> {
     let saved: SavedSession =
         settings::get(&state.db, SESSION_KEY).await?.ok_or_else(|| AppError::NotFound("saved session".into()))?;
     let ids: Vec<i64> = saved.entries.iter().filter_map(|e| e.track_id).collect();

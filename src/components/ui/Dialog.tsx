@@ -22,6 +22,14 @@ type DialogSpec =
       resolve: (ok: boolean) => void;
     }
   | {
+      kind: 'choice';
+      title: string;
+      body: ReactNode;
+      /** Buttons left to right; the last is the default. */
+      choices: { label: string; value: string }[];
+      resolve: (value: string | null) => void;
+    }
+  | {
       kind: 'custom';
       title: string;
       render: (close: () => void) => ReactNode;
@@ -31,7 +39,12 @@ type DialogSpec =
 
 const useDialog = create<{ dialog: DialogSpec | null; closing: boolean }>()(() => ({ dialog: null, closing: false }));
 
+/** Where focus was when the dialog opened, to go back to when it closes. */
+let returnFocus: HTMLElement | null = null;
+
 function show(spec: DialogSpec) {
+  const active = document.activeElement;
+  returnFocus = active instanceof HTMLElement && active !== document.body ? active : null;
   useDialog.setState({ dialog: spec, closing: false });
 }
 
@@ -44,6 +57,11 @@ export function askText(options: { title: string; label?: string; initial?: stri
 
 export function askConfirm(options: { title: string; body: ReactNode; confirm: string; danger?: boolean }) {
   return new Promise<boolean>((resolve) => show({ kind: 'confirm', ...options, resolve }));
+}
+
+/** Offers several answers; resolves to the chosen value, or null when cancelled. */
+export function askChoice(options: { title: string; body: ReactNode; choices: { label: string; value: string }[] }) {
+  return new Promise<string | null>((resolve) => show({ kind: 'choice', ...options, resolve }));
 }
 
 export function showDialog(title: string, render: (close: () => void) => ReactNode, width?: number) {
@@ -69,14 +87,27 @@ export function DialogHost() {
 
   const finish = (value: unknown) => {
     useDialog.setState({ closing: true });
-    window.setTimeout(() => useDialog.setState({ dialog: null, closing: false }), EXIT_MS);
+    window.setTimeout(() => {
+      const target = returnFocus;
+      returnFocus = null;
+      useDialog.setState({ dialog: null, closing: false });
+      // Back to where the user was once the dialog is gone, unless the
+      // action moved focus somewhere on purpose.
+      requestAnimationFrame(() => {
+        const active = document.activeElement;
+        const lost = !active || active === document.body || active.closest('.dlg-scrim') != null;
+        if (target?.isConnected && lost) target.focus({ preventScroll: true });
+      });
+    }, EXIT_MS);
     (dialog.resolve as (v: unknown) => void)(value);
   };
-  const cancel = () => finish(dialog.kind === 'prompt' ? null : dialog.kind === 'confirm' ? false : undefined);
+  const cancel = () =>
+    finish(dialog.kind === 'prompt' || dialog.kind === 'choice' ? null : dialog.kind === 'confirm' ? false : undefined);
   const submit = () => {
     if (dialog.kind === 'prompt') {
       if (text.trim()) finish(text.trim());
     } else if (dialog.kind === 'confirm') finish(true);
+    else if (dialog.kind === 'choice') finish(dialog.choices.at(-1)?.value ?? null);
     else finish(undefined);
   };
 
@@ -130,19 +161,37 @@ export function DialogHost() {
             ) : (
               <div className="t2 text-[13px] [text-wrap:pretty]">{dialog.body}</div>
             )}
-            <div className="dlg-actions">
-              <button type="button" className="btn" onClick={cancel}>
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className={dialog.kind === 'confirm' && dialog.danger ? 'btn danger' : 'btn pri'}
-                disabled={dialog.kind === 'prompt' && !text.trim()}
-                autoFocus={dialog.kind === 'confirm'}
-              >
-                {dialog.confirm}
-              </button>
-            </div>
+            {dialog.kind === 'choice' ? (
+              <div className="dlg-actions">
+                <button type="button" className="btn" onClick={cancel}>
+                  Cancel
+                </button>
+                {dialog.choices.map((c, i) => {
+                  const last = i === dialog.choices.length - 1;
+                  return (
+                    <button key={c.value} type="button" className={last ? 'btn pri' : 'btn'} autoFocus={last} onClick={() => finish(c.value)}>
+                      {c.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="dlg-actions">
+                {/* A destructive confirmation starts on Cancel, so Enter
+                    cannot remove or delete anything by reflex. */}
+                <button type="button" className="btn" onClick={cancel} autoFocus={dialog.kind === 'confirm' && dialog.danger}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className={dialog.kind === 'confirm' && dialog.danger ? 'btn danger' : 'btn pri'}
+                  disabled={dialog.kind === 'prompt' && !text.trim()}
+                  autoFocus={dialog.kind === 'confirm' && !dialog.danger}
+                >
+                  {dialog.confirm}
+                </button>
+              </div>
+            )}
           </form>
         )}
       </section>

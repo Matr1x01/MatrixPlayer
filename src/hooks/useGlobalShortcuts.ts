@@ -56,10 +56,16 @@ export function useGlobalShortcuts() {
             return () => void run(playerApi.previous());
           case 'MediaStop':
             return () => void run(playerApi.stop());
-          // Space always means play/pause here, even on a focused button;
-          // Enter still activates buttons for keyboard users.
+          // Space means play/pause, even on a button left focused by a
+          // click (pressing it again would be a surprise), but a control
+          // reached with the keyboard takes Space as a press, as it does
+          // everywhere else on the desktop.
           case ' ':
-            return plain ? () => void run(playerApi.toggle()) : null;
+            if (!plain) return null;
+            if (target?.matches('button:focus-visible, [role="switch"]:focus-visible, [role="checkbox"]:focus-visible, [role="tab"]:focus-visible')) {
+              return null;
+            }
+            return () => void run(playerApi.toggle());
           case 'ArrowRight':
             if (ctrl) return () => void run(playerApi.next());
             if (e.shiftKey) return () => seekBy(SEEK_STEP_MS);

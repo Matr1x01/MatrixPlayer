@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { Icon } from '@/components/icons/Icon';
 import { PageHeader } from '@/components/shell/PageHeader';
@@ -9,7 +9,7 @@ import { IconButton } from '@/components/ui/IconButton';
 import { contextMenu, type MenuItem } from '@/components/ui/ContextMenu';
 import { askText } from '@/components/ui/Dialog';
 import { Segmented } from '@/components/ui/Segmented';
-import { playScope } from '@/features/library/actions';
+import { clearQueue, playScope } from '@/features/library/actions';
 import { playlistSubmenu } from '@/features/library/trackMenu';
 import { openFiles, openFolder } from '@/features/library/openActions';
 import { beforeId, useDragReorder } from '@/hooks/useDragReorder';
@@ -34,15 +34,17 @@ interface QueueRowProps {
   ghost?: boolean;
   /** Moves the row one step with Alt+↑ / Alt+↓. */
   onNudge?: (delta: number) => void;
+  /** Removes the row (Delete, or its × button). */
+  onRemove: () => void;
   index: number;
 }
 
-const QueueRow = memo(function QueueRow({ entry, number, grip, ghost, onNudge, index }: QueueRowProps) {
+const QueueRow = memo(function QueueRow({ entry, number, grip, ghost, onNudge, onRemove, index }: QueueRowProps) {
   const { metadata, properties } = entry.track;
   const play = () => void run(queueApi.playEntry(entry.id));
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter') play();
-    if (e.key === 'Delete') void run(queueApi.removeEntry(entry.id));
+    if (e.key === 'Delete') onRemove();
     if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && onNudge) {
       e.preventDefault();
       onNudge(e.key === 'ArrowUp' ? -1 : 1);
@@ -51,10 +53,11 @@ const QueueRow = memo(function QueueRow({ entry, number, grip, ghost, onNudge, i
   const menu = contextMenu(() => queueMenu(entry), { label: 'Queue entry actions' });
   return (
     <div
-      className={ghost ? 'qr ghost' : 'qr'}
+      className={['qr', ghost && 'ghost', entry.failed && 'failed'].filter(Boolean).join(' ')}
       role="button"
       tabIndex={0}
       data-reorder
+      data-entry={entry.id}
       style={{ ['--i' as string]: Math.min(index, 16) }}
       onDoubleClick={play}
       onKeyDown={onKeyDown}
@@ -71,8 +74,15 @@ const QueueRow = memo(function QueueRow({ entry, number, grip, ghost, onNudge, i
       <span className="mono t3 text-right text-[11px]">{number}</span>
       <Artwork artwork={entry.track.artwork} size={36} radius={3} title={metadata.album ?? metadata.title} />
       <div className="flex min-w-0 flex-col gap-px">
-        <span className="el font-medium" style={{ color: 'var(--tx)' }}>
-          {metadata.title}
+        <span className="flex min-w-0 items-center gap-1.5">
+          {entry.failed && (
+            <span className="flex-none" style={{ color: 'var(--warn)' }} data-tip="Could not be played the last time it was tried">
+              <Icon name="warn" size={13} />
+            </span>
+          )}
+          <span className="el font-medium" style={{ color: 'var(--tx)' }}>
+            {metadata.title}
+          </span>
         </span>
         <span className="el t3 text-[12px]">{metadata.artist ?? 'Unknown artist'}</span>
       </div>
@@ -88,7 +98,7 @@ const QueueRow = memo(function QueueRow({ entry, number, grip, ghost, onNudge, i
         size={28}
         iconSize={15}
         className="rm"
-        onClick={() => void run(queueApi.removeEntry(entry.id))}
+        onClick={onRemove}
       />
     </div>
   );
@@ -281,23 +291,45 @@ export function QueueView() {
     [upcoming],
   );
   const { container, drag, grip } = useDragReorder(move);
+
+  // Keyboard focus follows a row that moved, or goes to a neighbour of one
+  // that was removed, instead of falling back to the page.
+  const refocus = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (refocus.current == null) return;
+    const row = document.querySelector<HTMLElement>(`.qr[data-entry="${refocus.current}"]`);
+    if (row) {
+      refocus.current = null;
+      if (document.activeElement !== row) row.focus();
+    }
+  });
   const nudge = (index: number, delta: number) => {
     const gap = delta < 0 ? index - 1 : index + 2;
-    if (gap >= 0 && gap <= upcoming.length) move(index, gap);
+    if (gap < 0 || gap > upcoming.length) return;
+    refocus.current = upcoming[index]?.id ?? null;
+    move(index, gap);
+  };
+  const remove = (entry: QueueEntry, index: number) => {
+    const neighbour = list[index + 1] ?? list[index - 1];
+    const hadFocus = document.activeElement?.closest('.qr') != null;
+    refocus.current = hadFocus && neighbour ? neighbour.id : null;
+    void run(queueApi.removeEntry(entry.id));
   };
 
-  // Upcoming entries split as on the Queue board: what was started, then
-  // what was added by hand.
+  // Upcoming entries in runs, as on the Queue board: what was started (an
+  // album, a playlist…) and what was added by hand, each labelled for what
+  // it is, in play order. Keyed by position so a move that changes a label
+  // does not remount the rows (and lose keyboard focus).
   const groups = useMemo(() => {
     if (tab !== 'next') return [{ title: 'Played in this session', start: 0, entries: list }];
-    const firstAdded = list.findIndex((e) => e.added);
-    if (firstAdded <= 0 || list.slice(firstAdded).some((e) => !e.added)) {
-      return [{ title: firstAdded === 0 ? 'Added by you' : contextTitle(list), start: 0, entries: list }];
-    }
-    return [
-      { title: contextTitle(list.slice(0, firstAdded)), start: 0, entries: list.slice(0, firstAdded) },
-      { title: 'Added by you', start: firstAdded, entries: list.slice(firstAdded) },
-    ];
+    const runs: { title: string; start: number; entries: QueueEntry[] }[] = [];
+    list.forEach((entry, i) => {
+      const last = runs.at(-1);
+      if (last && last.entries[0]!.added === entry.added) last.entries.push(entry);
+      else runs.push({ title: '', start: i, entries: [entry] });
+    });
+    for (const r of runs) r.title = r.entries[0]!.added ? 'Added by you' : contextTitle(r.entries);
+    return runs;
   }, [list, tab]);
 
   const firstNumber = tab === 'next' ? (current ?? -1) + 2 : 1;
@@ -336,7 +368,7 @@ export function QueueView() {
               <Icon name="playlist" size={15} />
               Save as playlist
             </button>
-            <button type="button" className="btn gh" disabled={total === 0} onClick={() => void run(queueApi.clear())}>
+            <button type="button" className="btn gh" disabled={total === 0} onClick={() => void clearQueue()}>
               <Icon name="trash" size={15} />
               Clear
             </button>
@@ -350,8 +382,8 @@ export function QueueView() {
         <div className="view-body flex flex-col gap-[18px] px-7 pb-6">
           <NowPlayingCard />
           <div ref={container} className="relative flex flex-col gap-[18px]">
-            {groups.map((group) => (
-              <div key={group.title} className="flex flex-col gap-0.5">
+            {groups.map((group, g) => (
+              <div key={g} className="flex flex-col gap-0.5">
                 <div className="flex items-center justify-between px-2.5 pb-1.5">
                   <span className="cap el">{group.title}</span>
                   <span className="mono t3 flex-none text-[10.5px]">
@@ -370,6 +402,7 @@ export function QueueView() {
                       grip={tab === 'next' ? grip(index) : undefined}
                       ghost={drag?.from === index}
                       onNudge={tab === 'next' ? (delta) => nudge(index, delta) : undefined}
+                      onRemove={() => remove(entry, index)}
                     />
                   );
                 })}

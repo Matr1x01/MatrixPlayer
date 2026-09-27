@@ -346,6 +346,9 @@ export function folderDetail(id: number): FolderDetail {
     albumCount: lfw ? 1 : 4,
     lastScanAt: now - 120,
     tagged: lfw ? 10 : 0,
+    totalTracks: lfw ? 10 : 47,
+    totalSize: lfw ? 10 * 30e6 : 47 * 30e6,
+    totalDurationMs: lfw ? 10 * 300_000 : 47 * 300_000,
   };
 }
 

@@ -41,8 +41,8 @@ function artistMenu(artist: { id: number; name: string }): MenuItem[] {
   return [
     { label: 'Play all', icon: 'play', filledIcon: true, onSelect: () => void playScope(scope) },
     { label: 'Shuffle', icon: 'shuffle', onSelect: () => void playScope(scope, 'replace', true) },
-    { label: 'Play next', icon: 'playNext', onSelect: () => void playScope(scope, 'next') },
-    { label: 'Add to queue', icon: 'queue', onSelect: () => void playScope(scope, 'append') },
+    { label: 'Play next', icon: 'playNext', onSelect: () => void playScope(scope, 'next', undefined, artist.name) },
+    { label: 'Add to queue', icon: 'queue', onSelect: () => void playScope(scope, 'append', undefined, artist.name) },
     'separator',
     { label: 'Add to playlist', icon: 'playlist', submenu: playlistSubmenu(() => scopeTrackIds(scope)) },
     { label: 'Add to favorites', icon: 'heart', onSelect: () => void scopeTrackIds(scope).then((ids) => setFavorite(ids, true)) },

@@ -30,6 +30,13 @@ pub struct QueueEntry {
     /// Queued with "play next" or "add to queue", rather than as part of
     /// what was started (an album, a folder…).
     pub added: bool,
+    /// Queued with "play next": later "play next" entries go after it, so
+    /// several tracks queued that way play in the order they were chosen.
+    #[serde(skip)]
+    pub play_next: bool,
+    /// The file could not be played the last time it was tried (missing,
+    /// unreadable, not audio).
+    pub failed: bool,
 }
 
 /// Where newly opened tracks go.
@@ -44,7 +51,7 @@ pub enum InsertMode {
     Append,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Queue {
     entries: Vec<QueueEntry>,
     /// Play order as indices into `entries`.
@@ -102,7 +109,13 @@ impl Queue {
         for track in tracks {
             let id = self.next_id;
             self.next_id += 1;
-            self.entries.push(QueueEntry { id, track, added: mode != InsertMode::Replace });
+            self.entries.push(QueueEntry {
+                id,
+                track,
+                added: mode != InsertMode::Replace,
+                play_next: mode == InsertMode::Next,
+                failed: false,
+            });
         }
         let mut new: Vec<usize> = (first_new..self.entries.len()).collect();
 
@@ -120,7 +133,12 @@ impl Queue {
                 self.order = new;
             }
             (InsertMode::Next, Some(cursor)) => {
-                self.order.splice(cursor + 1..cursor + 1, new);
+                // After the current entry and any earlier "play next" picks.
+                let mut at = cursor + 1;
+                while at < self.order.len() && self.entries[self.order[at]].play_next {
+                    at += 1;
+                }
+                self.order.splice(at..at, new);
             }
             (_, cursor) => {
                 if self.shuffle {
@@ -171,6 +189,18 @@ impl Queue {
         };
         self.cursor = Some(prev);
         self.current()
+    }
+
+    /// Flags an entry as having failed to play, or clears the flag. Returns
+    /// whether anything changed.
+    pub fn set_failed(&mut self, id: EntryId, failed: bool) -> bool {
+        match self.entries.iter_mut().find(|e| e.id == id) {
+            Some(entry) if entry.failed != failed => {
+                entry.failed = failed;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn jump_to(&mut self, id: EntryId) -> Option<&QueueEntry> {
@@ -337,6 +367,21 @@ mod tests {
         q.insert(tracks(&["z"]), InsertMode::Append, 0);
         q.insert(tracks(&["n"]), InsertMode::Next, 0);
         assert_eq!(titles(&q), ["a", "n", "b", "z"]);
+    }
+
+    #[test]
+    fn play_next_keeps_the_order_tracks_were_chosen_in() {
+        let mut q = Queue::default();
+        q.insert(tracks(&["a", "b"]), InsertMode::Replace, 0);
+        q.insert(tracks(&["n1"]), InsertMode::Next, 0);
+        q.insert(tracks(&["n2"]), InsertMode::Next, 0);
+        q.insert(tracks(&["z"]), InsertMode::Append, 0);
+        assert_eq!(titles(&q), ["a", "n1", "n2", "b", "z"]);
+
+        // Once the first pick is playing, a new pick goes after the second.
+        q.advance();
+        q.insert(tracks(&["n3"]), InsertMode::Next, 0);
+        assert_eq!(titles(&q), ["a", "n1", "n2", "n3", "b", "z"]);
     }
 
     #[test]

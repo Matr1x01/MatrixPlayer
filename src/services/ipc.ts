@@ -76,6 +76,8 @@ export const queueApi = {
   removeEntry: (id: number) => invoke<void>('queue_remove_entry', { id }),
   clear: () => invoke<void>('queue_clear'),
   clearOthers: () => invoke<void>('queue_clear_others'),
+  /** Puts back the queue from before the last replace or clear. */
+  undo: () => invoke<void>('queue_undo'),
   savedSession: () => invoke<{ tracks: number } | null>('queue_saved_session'),
   /** Restores the queue from the last run, paused where it was. */
   restoreSession: () => invoke<number>('queue_restore_session'),

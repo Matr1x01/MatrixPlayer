@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Icon } from '@/components/icons/Icon';
 import type { IconName } from '@/components/icons/paths';
@@ -16,6 +16,7 @@ import type { AppInfo } from '@/types/preferences';
 
 import { AppearanceSettings, SettingRow } from './AppearanceSettings';
 import { LibrarySettings } from './LibrarySettings';
+import { useSettingsSearch } from './search';
 import { SettingsPreview } from './SettingsPreview';
 import { SHORTCUTS } from './shortcuts';
 
@@ -46,10 +47,42 @@ const SECTIONS: { id: Section; label: string; icon: IconName }[] = [
   { id: 'about', label: 'About', icon: 'info' },
 ];
 
-/** What each not-yet-configurable section will hold, stated plainly. */
-const PENDING: Partial<Record<Section, string>> = {
-  general: 'Startup behaviour will live here. The last queue can be restored from the Queue view.',
+/** Words each section answers to in the settings search, beyond its name:
+ * its rows' titles and what they are about. */
+const KEYWORDS: Record<Section, string> = {
+  general: 'startup start launch resume restore session queue last',
+  library: 'music folders add remove rescan scan tags reread watching moved renamed files',
+  playback: 'gapless soft fades replaygain loudness previous restart broken files skip',
+  output: 'backend pipewire pulseaudio alsa device headphones dac speakers processing exclusive bit-perfect',
+  dsp: 'equalizer eq signal chain limiter crossfeed dither preamp replaygain',
+  appearance: 'theme dark light accent colour color background density rows interface scale zoom motion animation sidebar',
+  nowPlaying: 'visualizer spectrum waveform frequency meters artwork background',
+  lyrics: 'lyrics lrc synced embedded sources offset',
+  shortcuts: `keyboard keys hotkeys ${SHORTCUTS.map((s) => s.action).join(' ')}`,
+  desktop: 'mpris media keys lock screen notifications opening files command line launcher actions',
+  about: 'version gstreamer storage database',
 };
+
+function matches(section: (typeof SECTIONS)[number], query: string) {
+  const text = `${section.label} ${KEYWORDS[section.id]}`.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => text.includes(word));
+}
+
+function GeneralSettings() {
+  const prefs = usePreferences((s) => s.prefs);
+  return (
+    <SettingRow title="Startup" hint="What MatrixPlayer opens with">
+      <label className="flex items-center gap-2.5">
+        <Toggle on={prefs.restoreSession} onChange={(restoreSession) => void updatePreferences({ restoreSession })} label="Resume the last session" />
+        Resume the last session, paused where it was
+      </label>
+    </SettingRow>
+  );
+}
 
 function PlaybackSettings() {
   const gapless = usePlayer((s) => s.queue.gapless);
@@ -228,24 +261,27 @@ function About({ info }: { info: AppInfo | null }) {
 }
 
 export function SettingsView({ initial }: { initial?: string }) {
-  const [section, setSection] = useState<Section>(
-    SECTIONS.some((s) => s.id === initial) ? (initial as Section) : 'appearance',
-  );
+  const [chosen, setSection] = useState<Section>(SECTIONS.some((s) => s.id === initial) ? (initial as Section) : 'general');
   const [info, setInfo] = useState<AppInfo | null>(null);
   useEffect(() => {
     void systemApi.appInfo().then(setInfo);
   }, []);
+  const query = useSettingsSearch((s) => s.query.trim());
+  const found = useMemo(() => (query ? SECTIONS.filter((s) => matches(s, query)) : SECTIONS), [query]);
+  // While searching, show a matching section: the chosen one if it matches.
+  const section = query && found.length > 0 && !found.some((s) => s.id === chosen) ? found[0]!.id : chosen;
   const current = SECTIONS.find((s) => s.id === section)!;
 
   return (
     <div className="flex min-h-0 flex-1">
       <nav className="set-nav" aria-label="Settings sections">
-        {SECTIONS.map((s) => (
+        {found.map((s) => (
           <button key={s.id} type="button" className={s.id === section ? 'sn on' : 'sn'} onClick={() => setSection(s.id)}>
             <Icon name={s.icon} size={16} filled={s.icon === 'play'} />
             {s.label}
           </button>
         ))}
+        {found.length === 0 && <span className="t3 px-2.5 py-2 text-[12.5px]">No settings match “{query}”</span>}
         <div className="mt-auto flex flex-col gap-[3px] border-t border-ln p-2.5">
           <span className="mono t3 text-[10px]">MatrixPlayer {info?.version ?? ''}</span>
           <span className="mono t3 text-[10px]">Settings are saved automatically</span>
@@ -257,6 +293,7 @@ export function SettingsView({ initial }: { initial?: string }) {
             <span className="cap">Settings</span>
             <h1 className="page-title">{current.label}</h1>
           </div>
+          {section === 'general' && <GeneralSettings />}
           {section === 'appearance' && <AppearanceSettings />}
           {section === 'library' && <LibrarySettings />}
           {section === 'playback' && <PlaybackSettings />}
@@ -267,7 +304,6 @@ export function SettingsView({ initial }: { initial?: string }) {
           {section === 'desktop' && <DesktopSettings />}
           {section === 'shortcuts' && <ShortcutSettings />}
           {section === 'about' && <About info={info} />}
-          {PENDING[section] && <p className="t3 border-t border-ln pt-3.5 text-[12.5px]">{PENDING[section]}</p>}
         </div>
         {section === 'appearance' ? <SettingsPreview /> : <div />}
       </main>

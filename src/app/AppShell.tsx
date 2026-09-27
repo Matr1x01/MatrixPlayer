@@ -6,6 +6,7 @@ import { SidebarRail } from '@/components/shell/SidebarRail';
 import { TitleBar } from '@/components/shell/TitleBar';
 import { ContextMenuHost } from '@/components/ui/ContextMenu';
 import { DialogHost } from '@/components/ui/Dialog';
+import { DropOverlay } from '@/components/ui/DropOverlay';
 import { ToastHost } from '@/components/ui/ToastHost';
 import { TooltipHost } from '@/components/ui/TooltipHost';
 import { AmbientBackdrop } from '@/features/now-playing/AmbientBackdrop';
@@ -59,7 +60,7 @@ export function AppShell() {
     .filter(Boolean)
     .join(' ');
   const sidebarWidth = settings ? '240px' : rail ? '60px' : '220px';
-  const vars = { '--sidebar-w': sidebarWidth, '--playerbar-h': nowPlaying || settings ? '0px' : '84px' } as CSSProperties;
+  const vars = { '--sidebar-w': sidebarWidth, '--playerbar-h': nowPlaying ? '0px' : '84px' } as CSSProperties;
 
   return (
     <div className={classes} style={vars}>
@@ -76,13 +77,15 @@ export function AppShell() {
           <ViewOutlet route={route} />
         </div>
       </div>
-      {/* Now Playing has its own transport; Settings has none (per the design). */}
-      {!nowPlaying && !settings && <PlayerBar />}
+      {/* Now Playing has its own transport. Settings keeps the player bar,
+          so music can be paused while changing the output or playback. */}
+      {!nowPlaying && <PlayerBar />}
       <ToastHost />
       <SearchDialog />
       <DialogHost />
       <ContextMenuHost />
       <TooltipHost />
+      <DropOverlay />
     </div>
   );
 }
