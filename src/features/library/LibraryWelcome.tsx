@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { Icon } from '@/components/icons/Icon';
 import { libraryApi } from '@/services/ipc';
+import { watchNewRoot } from '@/stores/library';
 import { run, showToast } from '@/stores/toasts';
 import type { DefaultRoot } from '@/types/library';
 
@@ -11,7 +12,9 @@ const FORMATS = 'FLAC · ALAC · WAV · AIFF · DSF/DFF · MP3 · AAC · Opus ·
 
 export async function addLibraryFolder() {
   const id = await run(libraryApi.addRoot());
-  if (id != null) showToast({ tone: 'info', message: 'Folder added — indexing your music' });
+  if (id == null) return;
+  watchNewRoot(id);
+  showToast({ tone: 'info', message: 'Folder added — indexing your music' });
 }
 
 /** First run (Empty & loading states · 01): point MatrixPlayer at your music. */
@@ -47,7 +50,7 @@ export function LibraryWelcome() {
             type="button"
             className="btn lg"
             style={{ fontWeight: 500 }}
-            onClick={() => void run(libraryApi.addDefaultRoot())}
+            onClick={() => void run(libraryApi.addDefaultRoot()).then((id) => id != null && watchNewRoot(id))}
           >
             Use <span className="mono text-[11.5px]">{music.display}</span>
             <span className="mono t3 text-[10.5px]">

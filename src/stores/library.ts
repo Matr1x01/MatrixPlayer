@@ -74,13 +74,45 @@ function bump(kind: LibraryChange) {
   for (const reload of RELOAD[kind]) void reload().catch(() => undefined);
 }
 
+/** Folders just added, checked once their first scan ends. */
+const newRoots = new Set<number>();
+
+/** Warns, once its scan is done, if a newly added folder held no music. */
+export function watchNewRoot(id: number) {
+  newRoots.add(id);
+  // An empty folder can finish scanning before the id reaches us; if no
+  // scan is running a moment later, check now.
+  window.setTimeout(() => {
+    if (!isScanning(useLibrary.getState().scan)) void checkNewRoots().catch(() => undefined);
+  }, 1500);
+}
+
+async function checkNewRoots() {
+  if (newRoots.size === 0) return;
+  await loadRoots();
+  for (const id of [...newRoots]) {
+    const root = useLibrary.getState().roots.find((r) => r.id === id);
+    newRoots.delete(id);
+    if (!root || root.trackCount > 0) continue;
+    showToast({
+      tone: 'error',
+      message: 'No music found in that folder',
+      detail: root.display,
+      action: { label: 'Remove', run: () => void run(libraryApi.removeRoot(id)) },
+    });
+  }
+}
+
 export async function connectLibrary(): Promise<UnlistenFn> {
   const unlisteners = await Promise.all([
     onCoreEvent('library-scan', (scan) => {
       const before = useLibrary.getState().scan;
       useLibrary.setState({ scan });
-      if (scan.phase === 'idle' && before.phase !== 'idle' && scan.unreadable > 0) {
-        showToast({ tone: 'error', message: `${scan.unreadable} folders could not be read`, detail: 'Check their permissions' });
+      if (scan.phase === 'idle' && before.phase !== 'idle') {
+        if (scan.unreadable > 0) {
+          showToast({ tone: 'error', message: `${scan.unreadable} folders could not be read`, detail: 'Check their permissions' });
+        }
+        void checkNewRoots().catch(() => undefined);
       }
     }),
     onCoreEvent('library-changed', bump),
