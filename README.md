@@ -1,44 +1,227 @@
+<div align="center">
+
+<img src="src-tauri/icons/128x128.png" width="96" alt="MatrixPlayer icon">
+
 # MatrixPlayer
 
-An audio-focused music player for Linux, in the spirit of Poweramp: native
-playback on GStreamer and PipeWire with a 64-bit float processing chain, a
-Tauri 2 shell, and a React UI built from the design in
-`Fermata — Linux Music Player.html`.
+**An audio-focused music player for Linux, in the spirit of Poweramp.**
 
-**Status: all six roadmap milestones are in.** Library, queue and playlists,
-ReplayGain, parametric/graphic EQ and DSP, visualizers, synced lyrics,
-waveform seek, output device selection, MPRIS, notifications and desktop
-integration all run on the real pipeline. See [Not yet](#not-yet) for what is
-deliberately left as an extension point.
+Native playback on GStreamer and PipeWire with a 64-bit float DSP chain,
+a fast local library, and a desktop app built with Tauri 2 and React.
 
-## Requirements
+![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational)
+![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
+![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)
+
+[**Download**](https://github.com/Matr1x01/MatrixPlayer/releases/latest) ·
+[Features](#features) ·
+[Screenshots](#screenshots) ·
+[Build from source](#build-from-source)
+
+<img src="screenshots/now-playing.png" alt="MatrixPlayer's Now Playing view with the spectrum visualizer, waveform seek bar and signal path" width="100%">
+
+</div>
+
+## Install
+
+Grab a package from the [latest release](https://github.com/Matr1x01/MatrixPlayer/releases/latest)
+(x86_64):
+
+| Package | For | Install |
+| --- | --- | --- |
+| `MatrixPlayer_0.1.0_amd64.AppImage` | Any distribution, including Arch | `chmod +x MatrixPlayer_0.1.0_amd64.AppImage && ./MatrixPlayer_0.1.0_amd64.AppImage` |
+| `MatrixPlayer_0.1.0_amd64.deb` | Debian, Ubuntu, Mint, Pop!_OS | `sudo apt install ./MatrixPlayer_0.1.0_amd64.deb` |
+| `MatrixPlayer-0.1.0-1.x86_64.rpm` | Fedora, openSUSE | `sudo dnf install ./MatrixPlayer-0.1.0-1.x86_64.rpm` |
+
+The AppImage ships its own GStreamer. The `.deb` and `.rpm` packages use the
+system's GStreamer and pull in the base, good and PipeWire plugins. For AAC
+and ALAC (`.m4a`), also install `gstreamer1.0-libav` (Debian/Ubuntu) or
+`gstreamer1-libav` (Fedora).
+
+The `.deb` and `.rpm` packages add a desktop entry that registers MatrixPlayer
+for audio files, with Play/Pause, Next and Previous actions in your launcher.
+
+## Features
+
+### Sound
+
+- **Native pipeline.** GStreamer `playbin3` into PipeWire, with PulseAudio and
+  ALSA as fallbacks. Every stage runs in 64-bit float.
+- **Gapless playback**, plus a short soft fade on pause and seek so there are
+  no clicks.
+- **ReplayGain** in track, album or *smart* mode (album normally, track while
+  shuffling). It prevents clipping using the stored peak values, with separate
+  preamps for tagged and untagged files.
+- **Equalizer** with parametric, 10-band graphic and 31-band graphic modes. The
+  response curve is drawn over the live spectrum. It comes with 8 built-in
+  presets, lets you save your own and import or export them, and has A/B
+  compare and bypass.
+- **Tone and space controls:** preamp, auto preamp with an adjustable boost
+  allowance, bass and treble shelves, balance, stereo width, headphone
+  crossfeed and a peak limiter.
+- **Signal path view.** It shows every stage from decode to output (source
+  format, ReplayGain, EQ, processing and the negotiated output format). Click
+  a stage to jump to its settings.
+- **Output devices.** Switch between PipeWire devices mid-track without losing
+  your place.
+
+### Library
+
+- Add your music folders. Scans are incremental, the folders are watched for
+  changes, and renamed files are recognized.
+- Browse by **albums, artists** (album artists, all artists or composers),
+  **songs, genres and folders**.
+- Filter albums by Hi-Res, Lossless, Lossy, Recently added or Unplayed. Sort
+  them, switch between grid and list, and jump by letter.
+- **Instant search** (`Ctrl K`) across songs, albums, artists and folders,
+  with accent folding, so "Bjork" finds "Björk".
+- Format badges throughout (for example `FLAC 24/96`) and a file info dialog
+  for every track.
+- Artwork read from your files, cached and thumbnailed.
+- A home page with *Continue listening*, *Recently added* and *Most played*.
+
+### Queue and playlists
+
+- A reorderable queue. *Play next* keeps your picks in the order you chose
+  them, and you can undo when the queue is replaced or cleared.
+- Shuffle, and repeat (off, all, one).
+- Playlists that you can pin, rename and reorder. MatrixPlayer asks before
+  adding tracks a playlist already has.
+- Favorites and *Recently played*.
+- **Session restore:** MatrixPlayer reopens where you left off.
+- Missing or unreadable files are reported and skipped, and the next track
+  still plays.
+
+### Now Playing
+
+- Large artwork with an ambient backdrop taken from the album art (off,
+  subtle or immersive).
+- Visualizers: spectrum, waveform, frequency and level meters.
+- A **waveform seek bar** drawn from the track itself.
+- **Synced lyrics** from a sidecar `.lrc` file or from embedded tags, with
+  offsets and word timings.
+- A side panel with *Up next*, *Lyrics* and *File* tabs.
+
+### Linux desktop
+
+- **MPRIS 2:** media keys, desktop and bar media controls, lock screens.
+- Track change notifications.
+- A single instance. Opening files from your file manager, dropping them onto
+  the window, or passing them on the command line all go to the running
+  player.
+- [Command-line controls](#command-line) for scripts and keybindings.
+
+### Look and feel
+
+- Five themes: Graphite, Violet, Cobalt, Crimson and Light.
+- Eight accent colours.
+- Row density (compact, standard, comfortable), interface scale from 85% to
+  150%, a collapsible sidebar, and *Reduce motion* (the system's
+  `prefers-reduced-motion` setting is also respected).
+- Full keyboard control and searchable settings.
+
+## Screenshots
+
+| | |
+| --- | --- |
+| <img src="screenshots/home.png" alt="Home"> **Home.** Continue listening and recently added albums | <img src="screenshots/albums.png" alt="Albums"> **Albums.** Filters, sorting and format badges |
+| <img src="screenshots/artists.png" alt="Artists"> **Artists.** Discography, formats and details | <img src="screenshots/album-cobalt.png" alt="Album in the Cobalt theme"> **Album.** 24/96 FLAC, shown in the Cobalt theme |
+| <img src="screenshots/equalizer.png" alt="Equalizer"> **Equalizer.** 10-band graphic EQ over the live spectrum | <img src="screenshots/audio-dsp.png" alt="Audio and DSP"> **Audio / DSP.** Signal chain, output devices and ReplayGain |
+| <img src="screenshots/now-playing.png" alt="Now Playing"> **Now Playing.** Visualizer, waveform seek and signal path | <img src="screenshots/settings-appearance.png" alt="Appearance settings"> **Settings.** Themes, accents, density and scale |
+
+## Keyboard shortcuts
+
+| Action | Keys |
+| --- | --- |
+| Play / pause | `Space` |
+| Next / previous track | `Ctrl →` / `Ctrl ←` |
+| Seek forward / back 10 s | `Shift →` / `Shift ←` |
+| Volume up / down | `Ctrl ↑` / `Ctrl ↓` |
+| Mute · Shuffle · Repeat | `M` · `S` · `R` |
+| Search the library | `Ctrl K` or `Ctrl F` |
+| Filter the current list | `/` |
+| Favorite the playing track | `L` |
+| New playlist | `Ctrl N` |
+| In lists: play · play next · add to queue | `Enter` · `Shift Enter` · `Q` |
+| In lists: open album · open artist · file info | `Alt A` · `Alt R` · `Ctrl I` |
+| Open files · open folder | `Ctrl O` · `Ctrl Shift O` |
+| Now Playing · Settings | `Ctrl P` · `Ctrl ,` |
+| Back / forward | `Alt ←` / `Alt →` |
+| Full screen | `F11` |
+
+Media keys work everywhere through MPRIS. The same list is under
+*Settings → Keyboard shortcuts*.
+
+## Command line
+
+```sh
+matrixplayer ~/Music/Album            # play a folder
+matrixplayer song.flac other.opus     # play files (paths or file:// URIs)
+matrixplayer --play-pause             # also --play, --pause, --stop, --next, --previous
+```
+
+When MatrixPlayer is already running, these go to the open window instead of
+starting a second copy, so you can bind them to keys in your compositor.
+
+| Variable | Effect |
+| --- | --- |
+| `MATRIXPLAYER_AUDIO_SINK=pipewire\|pulse\|alsa\|auto\|null` | Force an output backend. `null` plays in real time into nothing, for headless runs. |
+| `RUST_LOG=matrixplayer_lib=debug` | Log pipeline decisions (gapless queueing, errors). |
+
+## Not yet
+
+These features show in the interface as unavailable instead of pretending to
+work:
+
+- Crossfade (tracks join gaplessly instead)
+- Exclusive device access, and forcing an output sample rate or bit depth
+- Per-device EQ presets
+- Accent colour taken from artwork, and following the system's light or dark
+  setting
+- A Flatpak package
+
+## Build from source
+
+### Requirements
 
 - Rust 1.92+ and Node 20+
-- GStreamer 1.22+ with `gst-plugins-base` and `gst-plugins-good` (FLAC, WAV,
-  Vorbis, Opus); `gst-libav` or `gst-plugins-bad` for AAC/ALAC; the
-  `pipewire` GStreamer plugin for native PipeWire output (PulseAudio and ALSA
-  are fallbacks)
-- WebKitGTK 4.1 and the usual [Tauri Linux prerequisites](https://tauri.app/start/prerequisites/)
-- A D-Bus session bus for MPRIS and notifications (optional; both are skipped without one)
+- GStreamer 1.22+ with the base and good plugins (FLAC, WAV, Vorbis, Opus),
+  `gst-libav` or `gst-plugins-bad` for AAC and ALAC, and the PipeWire
+  GStreamer plugin
+- WebKitGTK 4.1 and the other [Tauri Linux prerequisites](https://tauri.app/start/prerequisites/)
+- A D-Bus session bus for MPRIS and notifications (optional; both are skipped
+  without one)
 
-## Commands
+On Arch Linux, the audio part is:
+
+```sh
+sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire gst-libav webkit2gtk-4.1
+```
+
+### Commands
 
 ```sh
 npm install
 npm run tauri dev                   # run the app
 npm run tauri dev -- -- ~/Music     # …and play a folder or files from the command line
 npm run check                       # type-check, frontend tests, Rust tests
-cargo test --manifest-path src-tauri/Cargo.toml -- --ignored   # + runs against a real sound server
+cargo test --manifest-path src-tauri/Cargo.toml -- --ignored   # + tests against a real sound server
 npx tauri build                     # release build and packages (.deb, .rpm, AppImage)
 ```
 
-`MATRIXPLAYER_AUDIO_SINK=pipewire|pulse|alsa|auto|null` forces an output backend
-(`null` plays in real time into nothing, for headless runs).
-`RUST_LOG=matrixplayer_lib=debug` shows pipeline decisions (gapless queueing, errors).
+Packages are written to `src-tauri/target/release/bundle/`. The desktop entry
+(`src-tauri/linux/matrixplayer.desktop`) registers the audio MIME types and
+launcher actions. AppStream metadata is in
+`src-tauri/linux/io.github.matr1x01.MatrixPlayer.metainfo.xml`.
 
-A running instance also takes these from the command line or the desktop
-entry's actions: `matrixplayer --play-pause | --play | --pause | --stop | --next | --previous`,
-or files and `file://` URIs to play.
+### UI harness
+
+`npm run dev`, then open
+`http://localhost:5173/dev/harness.html?view=equalizer` to render any view in
+a normal browser against mocked IPC and sample data. It accepts the `view`,
+`id`, `tab`, `theme`, `accent`, `empty`, `noroots`, `scanning`, `search` and
+`menu` query parameters. The harness feeds a synthetic analysis stream so the
+visualizers move.
 
 ## Architecture
 
@@ -74,7 +257,12 @@ queue, library, search, settings, sound), `stores/` (zustand mirrors of core
 state), `services/` (typed IPC, the shared analysis stream), `styles/`
 (tokens, components, the motion layer).
 
-### IPC contract
+File paths never travel from the frontend to Rust. Files arrive through the
+native dialogs (opened by Rust), drag and drop onto the window, the command
+line, a second launch, or MPRIS `OpenUri`.
+
+<details>
+<summary><b>IPC contract</b></summary>
 
 Commands (`src/services/ipc.ts` wraps every one):
 
@@ -92,49 +280,18 @@ Events: `playback-state-changed`, `track-changed`, `position-changed` (every
 `library-changed`, `dsp-status` (ReplayGain source, limiter), `audio-analysis`
 (~30 frames/s, only while `dsp_set_analysis(true)`).
 
-File paths never travel from the frontend to Rust: files arrive through the
-native dialogs (opened by Rust), drag and drop onto the window, the command
-line, a second launch, or MPRIS `OpenUri`.
+</details>
 
-## Design
+### Design
 
-The design file is the visual source of truth. `npm run extract-design`
-unpacks its 15 boards into `design/extracted/` (gitignored) and its fonts into
-`src/assets/fonts/`. Class names in `src/styles/components.css` follow the
-design's CSS so markup can be compared side by side.
+Class names in `src/styles/components.css` follow the original design file's
+CSS, so markup can be compared side by side. `npm run extract-design [path]`
+unpacks that design file into `design/extracted/` (gitignored) and its fonts
+into `src/assets/fonts/`. The fonts are already committed, so you don't need
+the design file to build. Motion follows the design's timing tokens
+(`src/styles/motion.css`).
 
-`npm run dev`, then open `http://localhost:5173/dev/harness.html?view=equalizer`
-to render any view in a normal browser against mocked IPC and the design's
-sample data (`view`, `id`, `tab`, `theme`, `accent`, `empty`, `noroots`,
-`scanning`, `search` and `menu` query parameters). The harness feeds a
-synthetic analysis stream so visualizers move.
+## License
 
-Motion follows the design's timing tokens (`styles/motion.css`) and is
-switched off by the *Reduce motion* preference and by the system's
-`prefers-reduced-motion`.
-
-## Packaging
-
-`npx tauri build` produces `.deb`, `.rpm` and AppImage packages. The desktop
-entry (`src-tauri/linux/matrixplayer.desktop`) registers the audio MIME types
-and launcher actions (Play/Pause, Next, Previous); AppStream metadata ships in
-`src-tauri/linux/io.github.matr1x01.MatrixPlayer.metainfo.xml`. A Flatpak
-manifest is not written yet.
-
-## Roadmap
-
-1. **Foundation and playback** — done.
-2. **Library** — done: incremental scanning and watching, SQLite metadata, albums/artists/genres/folders, instant search.
-3. **Queue and playlists** — done: reordering, playlists, favorites, history, session restore.
-4. **Advanced player** — done: ReplayGain, synced lyrics (LRC), visualizers, waveform seek.
-5. **DSP** — done: preamp and auto preamp, graphic (10/31) and parametric EQ, tone and stereo controls, crossfeed, presets with import/export, A/B compare.
-6. **Linux integration** — done: MPRIS, media keys (via MPRIS), notifications, file associations, single instance, `.deb`/`.rpm`/AppImage packaging.
-
-### Not yet
-
-These have a place in the UI marked as not available, rather than a fake:
-
-- Crossfade (tracks join gaplessly instead)
-- Exclusive device access and forcing an output sample rate or bit depth
-- Per-device EQ presets
-- A Flatpak manifest
+MatrixPlayer is licensed under the
+[GNU General Public License v3.0 or later](https://www.gnu.org/licenses/gpl-3.0.html).
