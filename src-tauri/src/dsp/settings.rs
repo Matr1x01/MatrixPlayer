@@ -110,29 +110,17 @@ impl EqCurve {
         self.treble_db = finite_or(self.treble_db, 0.0).clamp(-MAX_GAIN_DB, MAX_GAIN_DB);
     }
 
-    /// The filters this curve amounts to, EQ bands then tone controls.
-    pub fn filters(&self) -> Vec<EqBand> {
+    /// The curve as a fixed row of filter slots: every EQ band (flat and
+    /// disabled ones too, so a band that changes never disturbs the others),
+    /// then bass and treble.
+    pub fn slots(&self) -> Vec<EqBand> {
         let mut out: Vec<EqBand> = match self.mode {
-            EqMode::Parametric => self.parametric.iter().copied().filter(|b| b.enabled).collect(),
+            EqMode::Parametric => self.parametric.clone(),
             EqMode::Graphic10 => graphic(&GRAPHIC_10, &self.graphic10, GRAPHIC_10_Q),
             EqMode::Graphic31 => graphic(&GRAPHIC_31, &self.graphic31, GRAPHIC_31_Q),
         };
-        if self.bass_db.abs() > 0.05 {
-            out.push(EqBand { enabled: true, kind: FilterKind::LowShelf, freq: 100.0, gain_db: self.bass_db, q: 0.7 });
-        }
-        if self.treble_db.abs() > 0.05 {
-            out.push(EqBand {
-                enabled: true,
-                kind: FilterKind::HighShelf,
-                freq: 8000.0,
-                gain_db: self.treble_db,
-                q: 0.7,
-            });
-        }
-        // Flat bands cost CPU and do nothing (pass filters always count).
-        out.retain(|b| {
-            b.gain_db.abs() > 0.05 || matches!(b.kind, FilterKind::LowPass | FilterKind::HighPass | FilterKind::Notch)
-        });
+        out.push(EqBand { enabled: true, kind: FilterKind::LowShelf, freq: 100.0, gain_db: self.bass_db, q: 0.7 });
+        out.push(EqBand { enabled: true, kind: FilterKind::HighShelf, freq: 8000.0, gain_db: self.treble_db, q: 0.7 });
         out
     }
 }
@@ -335,16 +323,19 @@ mod tests {
     }
 
     #[test]
-    fn flat_curves_add_no_filters_and_tone_controls_do() {
+    fn every_band_keeps_its_slot_then_bass_and_treble() {
         let mut curve = EqCurve::default();
-        assert!(curve.filters().is_empty());
+        let slots = curve.slots();
+        assert_eq!(slots.len(), 8 + 2);
+        assert!(slots.iter().all(|b| b.gain_db == 0.0), "a flat curve has only flat slots");
+        curve.parametric[3].enabled = false;
+        assert_eq!(curve.slots().len(), 10, "disabled bands keep their slot");
         curve.bass_db = 3.0;
-        let filters = curve.filters();
-        assert_eq!(filters.len(), 1);
-        assert_eq!(filters[0].kind, FilterKind::LowShelf);
+        let bass = curve.slots()[8];
+        assert_eq!((bass.kind, bass.freq, bass.gain_db), (FilterKind::LowShelf, 100.0, 3.0));
         curve.mode = EqMode::Graphic31;
-        curve.graphic31[10] = -2.0;
-        assert_eq!(curve.filters().len(), 2);
+        assert_eq!(curve.slots().len(), 31 + 2);
+        assert_eq!(curve.slots()[32].kind, FilterKind::HighShelf);
     }
 
     #[test]

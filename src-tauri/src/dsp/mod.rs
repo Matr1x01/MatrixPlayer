@@ -29,6 +29,7 @@
 
 pub mod analysis;
 pub mod biquad;
+pub mod eq;
 pub mod processor;
 pub mod service;
 pub mod settings;
@@ -41,7 +42,7 @@ use gstreamer_audio as gst_audio;
 use tokio::sync::broadcast;
 
 use self::analysis::AnalysisFrame;
-use self::processor::{DspStatus, Params, Processor, Shared};
+use self::processor::{DspStatus, EqSpec, Params, Processor, Shared};
 use self::settings::DspSettings;
 use crate::error::AppResult;
 
@@ -207,7 +208,7 @@ impl DspControl {
     pub fn apply(&self, settings: &DspSettings) {
         let active = settings.eq_active();
         self.shared.set_params(Params {
-            filters: if active { settings.curve().filters() } else { Vec::new() },
+            eq: active.then(|| EqSpec { slot: settings.slot, curve: settings.curve().clone() }),
             preamp_db: if active { settings.preamp_db } else { 0.0 },
             auto_preamp_allowance_db: (active && settings.auto_preamp).then_some(settings.auto_preamp_allowance_db),
             balance: settings.balance,

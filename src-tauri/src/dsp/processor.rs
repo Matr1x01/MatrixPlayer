@@ -1,7 +1,7 @@
 //! The per-buffer processing that runs on GStreamer's streaming thread.
 //!
 //! ```text
-//! F64 in ─ ReplayGain × preamp ─ EQ biquads ─ balance ─ width ─ crossfeed
+//! F64 in ─ ReplayGain × preamp ─ EQ ─ balance ─ width ─ crossfeed
 //!        ─ fade ─ peak limiter ─ volume ─ F64 out
 //! ```
 //!
@@ -18,8 +18,8 @@ use gstreamer as gst;
 use serde::Serialize;
 
 use super::analysis::AnalysisTap;
-use super::biquad::{Coeffs, State, max_boost_db};
-use super::settings::{EqBand, ReplayGainMode};
+use super::eq::Equalizer;
+use super::settings::{AbSlot, EqCurve, ReplayGainMode};
 
 /// Samples above this are pulled down by the limiter (−0.1 dBFS).
 const LIMIT: f64 = 0.988_553;
@@ -40,10 +40,19 @@ const VOLUME_SNAP: f64 = 1e-6;
 /// drops into subnormal numbers, which are very slow on most CPUs.
 const DENORMAL: f64 = 1e-30;
 
+/// The EQ curve being heard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EqSpec {
+    /// The compare slot it is in: switching slots crossfades.
+    pub slot: AbSlot,
+    pub curve: EqCurve,
+}
+
 /// Everything the audio thread needs, derived from the user's settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
-    pub filters: Vec<EqBand>,
+    /// The EQ and tone controls; `None` while they are off or bypassed.
+    pub eq: Option<EqSpec>,
     pub preamp_db: f64,
     /// With auto preamp on, the EQ boost allowed before the level is lowered
     /// by the rest of the boost.
@@ -62,7 +71,7 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Self {
         Self {
-            filters: Vec::new(),
+            eq: None,
             preamp_db: 0.0,
             auto_preamp_allowance_db: None,
             balance: 0.0,
@@ -193,11 +202,7 @@ pub struct Processor {
     params: Params,
     rate: f64,
     channels: usize,
-    coeffs: Vec<Coeffs>,
-    /// The largest boost of the EQ curve at the stream's rate.
-    max_boost_db: f64,
-    /// `states[band * channels + channel]`
-    states: Vec<State>,
+    eq: Equalizer,
     rg: RgTags,
     /// Target static gain (ReplayGain × preamp) and the gain now, ramped.
     gain_target: f64,
@@ -231,9 +236,7 @@ impl Processor {
             params: Params::default(),
             rate: 48_000.0,
             channels: 2,
-            coeffs: Vec::new(),
-            max_boost_db: 0.0,
-            states: Vec::new(),
+            eq: Equalizer::new(48_000.0, 2),
             rg: RgTags::default(),
             gain_target: 1.0,
             gain_now: 1.0,
@@ -263,7 +266,8 @@ impl Processor {
         self.xfeed_a = (-2.0 * std::f64::consts::PI * CROSSFEED_HZ / self.rate).exp();
         self.status.sample_rate = rate;
         self.status.channels = channels;
-        self.rebuild();
+        self.eq.set_format(self.rate, self.channels);
+        self.update_eq();
         self.update_gain();
     }
 
@@ -348,14 +352,10 @@ impl Processor {
             }
         }
 
-        // Equalizer.
-        for (band, coeffs) in self.coeffs.iter().enumerate() {
-            let states = &mut self.states[band * ch..(band + 1) * ch];
-            for frame in samples.chunks_exact_mut(ch) {
-                for (s, state) in frame.iter_mut().zip(states.iter_mut()) {
-                    *s = state.run(coeffs, *s);
-                }
-            }
+        if self.eq.process(samples) {
+            // Settled: the limiter may no longer be needed, and a change that
+            // waited for a crossfade may have brought another boost.
+            self.update_gain();
         }
 
         if ch == 2 {
@@ -444,7 +444,7 @@ impl Processor {
 
     /// Filter, crossfeed and limiter memories, as after silence.
     fn clear_memories(&mut self) {
-        self.states.iter_mut().for_each(|s| *s = State::default());
+        self.eq.clear();
         self.xfeed_lp = [0.0; 2];
         self.limiter_env = 1.0;
     }
@@ -461,7 +461,7 @@ impl Processor {
     }
 
     fn flush_denormals(&mut self) {
-        self.states.iter_mut().for_each(State::flush_denormals);
+        self.eq.flush_denormals();
         for v in &mut self.xfeed_lp {
             if v.abs() < DENORMAL {
                 *v = 0.0;
@@ -501,10 +501,10 @@ impl Processor {
         }
         self.seen = version;
         let params = self.shared.params.lock().unwrap().clone();
-        let filters_changed = params.filters != self.params.filters;
+        let eq_changed = params.eq != self.params.eq;
         self.params = params;
-        if filters_changed {
-            self.rebuild();
+        if eq_changed {
+            self.update_eq();
         }
         self.update_gain();
     }
@@ -520,15 +520,13 @@ impl Processor {
         }
     }
 
-    fn rebuild(&mut self) {
-        let old_bands = self.coeffs.len();
-        self.coeffs = self.params.filters.iter().map(|b| Coeffs::for_band(b, self.rate)).collect();
-        self.max_boost_db = max_boost_db(&self.coeffs, self.rate);
-        // Keep filter memories when only coefficients change, so dragging a
-        // band does not click; reset them when the layout changes.
-        if old_bands != self.coeffs.len() || self.states.len() != self.coeffs.len() * self.channels {
-            self.states = vec![State::default(); self.coeffs.len() * self.channels];
-        }
+    /// Hands the curve to the equalizer, which glides or crossfades to it.
+    fn update_eq(&mut self) {
+        let (curve, bands) = match &self.params.eq {
+            Some(spec) => (Some((spec.slot, spec.curve.mode)), spec.curve.slots()),
+            None => (None, Vec::new()),
+        };
+        self.eq.update(curve, bands);
     }
 
     fn update_gain(&mut self) {
@@ -563,11 +561,12 @@ impl Processor {
         }
         // Auto preamp takes back only the boost beyond the allowance, and
         // the same for every track, so ReplayGain's levels stay matched.
-        let auto_db = p.auto_preamp_allowance_db.map_or(0.0, |allowance| (self.max_boost_db - allowance).max(0.0));
+        let boost = self.eq.max_boost_db();
+        let auto_db = p.auto_preamp_allowance_db.map_or(0.0, |allowance| (boost - allowance).max(0.0));
         self.gain_target = rg_linear * db_to_linear(p.preamp_db - auto_db);
         // The EQ counts even when it only cuts: shifting phases can raise
         // peaks. Balance, fades and a narrower image only ever lower them.
-        self.limiter_needed = self.gain_target > 1.0 || !self.coeffs.is_empty() || p.width > 1.0;
+        self.limiter_needed = self.gain_target > 1.0 || self.eq.engaged() || p.width > 1.0;
         self.status.replay_gain_source = source;
         self.status.replay_gain_db = linear_to_db(rg_linear);
     }
@@ -598,6 +597,13 @@ pub fn linear_to_db(linear: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::biquad::State;
+    use crate::dsp::settings::EqBand;
+
+    /// A parametric curve of `bands` (tone controls flat).
+    fn curve(bands: Vec<EqBand>) -> Option<EqSpec> {
+        Some(EqSpec { slot: AbSlot::A, curve: EqCurve { parametric: bands, ..EqCurve::default() } })
+    }
 
     fn processor(params: Params) -> Processor {
         let shared = Arc::new(Shared::new());
@@ -721,8 +727,7 @@ mod tests {
 
     #[test]
     fn decaying_filter_tails_are_flushed_to_zero() {
-        use crate::dsp::settings::EqBand;
-        let mut p = processor(Params { filters: vec![EqBand::peak(31.0, 6.0, 1.41)], ..Params::default() });
+        let mut p = processor(Params { eq: curve(vec![EqBand::peak(31.0, 6.0, 1.41)]), ..Params::default() });
         let mut impulse = vec![0.0; 2048];
         impulse[..2].copy_from_slice(&[1.0, 1.0]);
         p.process(&mut impulse, None);
@@ -731,7 +736,7 @@ mod tests {
             silence.fill(0.0);
             p.process(&mut silence, None);
         }
-        assert!(p.states.iter().all(|s| *s == State::default()), "{:?}", p.states);
+        assert!(p.eq.states().iter().all(|s| *s == State::default()), "{:?}", p.eq.states());
         assert!(silence.iter().all(|s| *s == 0.0));
     }
 
@@ -803,9 +808,8 @@ mod tests {
 
     #[test]
     fn auto_preamp_lowers_the_level_only_beyond_its_allowance() {
-        use crate::dsp::settings::EqBand;
         let boost = |db| Params {
-            filters: vec![EqBand::peak(1000.0, db, 1.0)],
+            eq: curve(vec![EqBand::peak(1000.0, db, 1.0)]),
             auto_preamp_allowance_db: Some(3.0),
             ..Params::default()
         };
@@ -824,9 +828,8 @@ mod tests {
     #[test]
     fn auto_preamp_is_the_same_for_every_track() {
         gst::init().unwrap();
-        use crate::dsp::settings::EqBand;
         let mut p = processor(Params {
-            filters: vec![EqBand::peak(1000.0, 8.0, 1.0)],
+            eq: curve(vec![EqBand::peak(1000.0, 8.0, 1.0)]),
             auto_preamp_allowance_db: Some(3.0),
             replay_gain: ReplayGainMode::Track,
             ..Params::default()
@@ -849,6 +852,127 @@ mod tests {
         let dynamic = linear_to_db(p.gain_target);
         assert!((loud - (-9.0 - 5.0)).abs() < 0.01, "{loud}");
         assert!((dynamic - (-1.0 - 5.0)).abs() < 0.01, "{dynamic}");
+    }
+
+    /// A continuous 997 Hz stereo tone at 0.2, handed out block by block.
+    /// Not a divisor of the rate, so changes land mid-waveform, where a
+    /// click would show.
+    struct Tone(usize);
+
+    impl Tone {
+        fn next(&mut self, frames: usize) -> Vec<f64> {
+            let start = self.0;
+            self.0 += frames;
+            (start..start + frames)
+                .flat_map(|n| {
+                    let v = 0.2 * (2.0 * std::f64::consts::PI * 997.0 * n as f64 / 48_000.0).sin();
+                    [v, v]
+                })
+                .collect()
+        }
+    }
+
+    /// Largest sample-to-sample change of the left channel: a click shows
+    /// up as a step far larger than the tone's own.
+    fn roughness(samples: &[f64]) -> f64 {
+        let left: Vec<f64> = samples.iter().step_by(2).copied().collect();
+        largest_step(&left)
+    }
+
+    /// Plays the tone through `from`, switches to `to`, and checks that the
+    /// switch is no rougher than the steady tone on either side of it.
+    fn switches_without_a_click(from: Params, to: Params) {
+        let shared = Arc::new(Shared::new());
+        shared.set_params(from);
+        let mut p = Processor::new(shared.clone());
+        p.set_format(48_000, 2);
+        let mut tone = Tone(0);
+        let mut play = |p: &mut Processor, frames| {
+            let mut samples = tone.next(frames);
+            p.process(&mut samples, None);
+            samples
+        };
+        play(&mut p, 24_011);
+        let before = roughness(&play(&mut p, 4_801));
+        shared.set_params(to);
+        let during = roughness(&play(&mut p, 4_801));
+        play(&mut p, 24_011);
+        let after = roughness(&play(&mut p, 4_801));
+        let steady = before.max(after);
+        assert!(during <= steady * 1.03, "switching stepped by {during:.5}; steady tone {steady:.5}");
+    }
+
+    fn graphic(gains: [f64; 10], slot: AbSlot) -> Option<EqSpec> {
+        use crate::dsp::settings::EqMode;
+        Some(EqSpec {
+            slot,
+            curve: EqCurve { mode: EqMode::Graphic10, graphic10: gains.to_vec(), ..EqCurve::default() },
+        })
+    }
+
+    #[test]
+    fn discrete_eq_changes_crossfade_without_a_click() {
+        let a = graphic([0.0, 2.0, 0.0, -3.0, 0.0, 6.0, 0.0, 4.0, 0.0, 0.0], AbSlot::A);
+        let b = graphic([0.0, 0.0, 0.0, 0.0, -2.0, -6.0, 3.0, 0.0, 0.0, 0.0], AbSlot::B);
+        let eq = |eq| Params { eq, ..Params::default() };
+        // A/B compare, bypass and the EQ switched on.
+        switches_without_a_click(eq(a.clone()), eq(b));
+        switches_without_a_click(eq(a.clone()), eq(None));
+        switches_without_a_click(eq(None), eq(a));
+        // A band that shapes the sound switched off.
+        let mut band = EqBand::peak(1000.0, 6.0, 1.0);
+        let on = curve(vec![EqBand::peak(200.0, 3.0, 1.0), band]);
+        band.enabled = false;
+        switches_without_a_click(eq(on), eq(curve(vec![EqBand::peak(200.0, 3.0, 1.0), band])));
+    }
+
+    #[test]
+    fn a_band_glides_to_a_new_gain_without_a_click() {
+        let eq = |db| Params { eq: curve(vec![EqBand::peak(1000.0, db, 1.0)]), ..Params::default() };
+        switches_without_a_click(eq(0.0), eq(12.0));
+        switches_without_a_click(eq(12.0), eq(-12.0));
+        assert!((gain_at_1k(eq(12.0)) - 12.0).abs() < 0.05, "lands on the new gain");
+    }
+
+    #[test]
+    fn moving_one_slider_leaves_the_other_bands_memories_alone() {
+        let shared = Arc::new(Shared::new());
+        let mut gains = [3.0, 2.0, 0.0, -3.0, 1.0, 6.0, 0.0, 4.0, 2.0, 0.0];
+        shared.set_params(Params { eq: graphic(gains, AbSlot::A), ..Params::default() });
+        let mut p = Processor::new(shared.clone());
+        p.set_format(48_000, 2);
+        let mut tone = Tone(0);
+        p.process(&mut tone.next(24_000), None);
+        let before = p.eq.states().to_vec();
+        assert!(before.iter().any(|s| *s != State::default()));
+
+        gains[2] = 1.0;
+        shared.set_params(Params { eq: graphic(gains, AbSlot::A), ..Params::default() });
+        p.process(&mut [], None);
+        assert!(!p.eq.crossfading(), "a slider move glides");
+        assert_eq!(p.eq.states(), &before[..], "no band's memory was reset");
+    }
+
+    #[test]
+    fn a_flat_or_switched_off_eq_leaves_samples_untouched() {
+        let shared = Arc::new(Shared::new());
+        let flat = Params { eq: graphic([0.0; 10], AbSlot::A), ..Params::default() };
+        shared.set_params(flat);
+        let mut p = Processor::new(shared.clone());
+        p.set_format(48_000, 2);
+        let input = sine(9600, 1.0);
+        let mut samples = input.clone();
+        p.process(&mut samples, None);
+        assert_eq!(samples, input, "an EQ with every band flat");
+
+        shared.set_params(Params { eq: graphic([6.0; 10], AbSlot::A), ..Params::default() });
+        p.process(&mut sine(9600, 0.1), None);
+        shared.set_params(Params::default());
+        p.process(&mut sine(9600, 0.1), None);
+        let mut samples = input.clone();
+        p.process(&mut samples, None);
+        assert_eq!(samples, input, "once the EQ has faded out, the limiter is out too");
+        assert!(!p.status.limiting);
     }
 
     #[test]
