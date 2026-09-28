@@ -93,7 +93,7 @@ function PlaybackSettings() {
       <SettingRow title="Gapless playback" hint="Tracks follow each other without silence">
         <Toggle on={gapless} onChange={(on) => void run(playerApi.setGapless(on))} label="Gapless playback" />
       </SettingRow>
-      <SettingRow title="Soft fades" hint="120 ms ramps on pause, resume and seek">
+      <SettingRow title="Soft fades" hint="Ramps on pause and resume (120 ms), and on seek, skip and stop (40 ms)">
         <Toggle on={!!settings?.softFades} disabled={!settings} onChange={(softFades) => patchDsp({ softFades })} label="Soft fades" />
       </SettingRow>
       <SettingRow title="ReplayGain" hint="Loudness levelling from the files' tags">

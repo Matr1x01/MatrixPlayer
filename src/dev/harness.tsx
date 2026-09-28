@@ -11,6 +11,7 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 
 import { useNavigation, type ViewId } from '@/stores/navigation';
 
+import { previewResponse } from './eqPreview';
 import * as lib from './mockLibrary';
 import type { DspSettings, DspState, EqBand, Lyrics, OutputDevices } from '@/types/dsp';
 import type { PlayerSnapshot, QueueEntry, TrackInfo } from '@/types/player';
@@ -167,6 +168,7 @@ const dspSettings: DspSettings = {
   balance: 0,
   width: 1.15,
   crossfeed: false,
+  crossfeedPreset: 'default',
   replayGain: 'album',
   replayGainPreampDb: 0,
   replayGainFallbackDb: 0,
@@ -313,6 +315,10 @@ mockIPC(
       case 'dsp_save_preset':
       case 'dsp_delete_preset':
         return dspState();
+      case 'dsp_eq_response': {
+        const { curve, freqs } = args as { curve: DspSettings['a']; freqs: number[] };
+        return previewResponse(curve, freqs);
+      }
       case 'dsp_set_analysis':
         fakeAnalysis((args as { enabled: boolean }).enabled && !empty);
         return null;

@@ -2,21 +2,10 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerE
 
 import { bandFrequency, useAnalysis } from '@/services/analysis';
 import { reducedMotion } from '@/services/motion';
-import type { EqBand, EqCurve } from '@/types/dsp';
+import type { EqBand, EqCurve, EqResponse } from '@/types/dsp';
 
-import {
-  GRAPHIC_10,
-  GRAPHIC_10_Q,
-  GRAPHIC_31,
-  GRAPHIC_31_Q,
-  KIND_LABEL,
-  MAX_GAIN_DB,
-  curveFilters,
-  formatFreq,
-  formatGain,
-  hasGain,
-  responseOf,
-} from './eqMath';
+import { GRAPHIC_10, GRAPHIC_10_Q, GRAPHIC_31, GRAPHIC_31_Q, KIND_LABEL, MAX_GAIN_DB, formatFreq, formatGain, hasGain } from './eqMath';
+import { DRAW_FREQS } from './eqResponse';
 
 // Plot geometry, as in the Equalizer board (viewBox 840 × 290).
 const W = 840;
@@ -43,7 +32,6 @@ function path(points: [number, number][]) {
   return points.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
 }
 
-const SAMPLES = Array.from({ length: 241 }, (_, i) => 20 * Math.pow(1000, i / 240));
 const MORPH_MS = 260;
 
 /**
@@ -98,6 +86,8 @@ export interface GraphNode {
 
 interface ResponseGraphProps {
   curve: EqCurve;
+  /** The curve's response as the core plays it, at `DRAW_FREQS`. */
+  response: EqResponse | null;
   /** The EQ is shaping the sound (on and not bypassed). */
   active: boolean;
   selected: number | null;
@@ -116,6 +106,7 @@ interface ResponseGraphProps {
 /** The EQ's frequency response over the live spectrum, with draggable bands. */
 export function ResponseGraph({
   curve,
+  response,
   active,
   selected,
   onSelect,
@@ -141,18 +132,18 @@ export function ResponseGraph({
     });
   }, [curve, parametric]);
 
-  const target = useMemo(() => {
-    const response = responseOf(curveFilters(curve));
-    return SAMPLES.map((f) => clamp(response(f), -MAX_GAIN_DB - 2, MAX_GAIN_DB + 2));
-  }, [curve]);
+  const target = useMemo(
+    () => DRAW_FREQS.map((_, i) => clamp(response?.total[i] ?? 0, -MAX_GAIN_DB - 2, MAX_GAIN_DB + 2)),
+    [response],
+  );
   const shown = useMorph(target, drag != null);
-  const curvePath = useMemo(() => path(SAMPLES.map((f, i) => [fx(f), gy(shown[i]!)])), [shown]);
+  const curvePath = useMemo(() => path(DRAW_FREQS.map((f, i) => [fx(f), gy(shown[i]!)])), [shown]);
   const sel = selected != null ? nodes[selected] : undefined;
   const selPath = useMemo(() => {
-    if (!sel || !parametric) return null;
-    const one = responseOf([{ ...sel.band, enabled: true }]);
-    return path(SAMPLES.map((f) => [fx(f), gy(clamp(one(f), -MAX_GAIN_DB - 2, MAX_GAIN_DB + 2))]));
-  }, [sel, parametric]);
+    const one = sel && parametric ? response?.bands[sel.index] : undefined;
+    if (!one) return null;
+    return path(DRAW_FREQS.map((f, i) => [fx(f), gy(clamp(one[i] ?? 0, -MAX_GAIN_DB - 2, MAX_GAIN_DB + 2))]));
+  }, [sel, parametric, response]);
 
   const spectrumPath = useMemo(() => {
     if (!showSpectrum) return null;

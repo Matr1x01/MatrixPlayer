@@ -29,6 +29,8 @@ export interface EqCurve {
 }
 
 export type ReplayGainMode = 'off' | 'track' | 'album' | 'smart';
+/** bs2b's crossfeed presets. */
+export type CrossfeedPreset = 'default' | 'chuMoy' | 'janMeier';
 export type AbSlot = 'a' | 'b';
 
 export interface DspSettings {
@@ -51,12 +53,23 @@ export interface DspSettings {
   /** 0 (mono) … 2; 1 leaves the stereo image alone. */
   width: number;
   crossfeed: boolean;
+  crossfeedPreset: CrossfeedPreset;
   replayGain: ReplayGainMode;
   replayGainPreampDb: number;
   replayGainFallbackDb: number;
   clippingPrevention: boolean;
   softFades: boolean;
   dither: boolean;
+}
+
+/** An EQ curve's response as the core plays it (for drawing). */
+export interface EqResponse {
+  /** The whole curve (dB) at each frequency asked for. */
+  total: number[];
+  /** Each parametric band on its own (dB); empty in the graphic modes. */
+  bands: number[][];
+  /** Largest boost anywhere in the audible range. */
+  maxBoostDb: number;
 }
 
 export interface Preset {

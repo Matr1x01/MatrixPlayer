@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 
 import { Icon } from '@/components/icons/Icon';
 import { contextMenu, openMenu, type MenuItem } from '@/components/ui/ContextMenu';
@@ -10,24 +10,22 @@ import { activeCurve, applyState, patchCurve, patchDsp, setDsp, useDsp } from '@
 import { run, showToast } from '@/stores/toasts';
 import type { DspSettings, EqBand, EqCurve, EqMode, FilterKind, Preset } from '@/types/dsp';
 
-import { CenterSlider, Fader, Knob, ValueField } from './controls';
+import { CenterSlider, CrossfeedPresets, Fader, Knob, ValueField } from './controls';
 import {
-  DRAW_RATE,
   GRAPHIC_10,
   GRAPHIC_31,
   KIND_LABEL,
   KIND_SHORT,
   MAX_BANDS,
   MAX_GAIN_DB,
-  curveFilters,
   formatFreq,
   formatGain,
   hasGain,
-  maxBoostDb,
   parseFreq,
   parseNumber,
   sameCurve,
 } from './eqMath';
+import { useEqResponse } from './eqResponse';
 import { ResponseGraph } from './ResponseGraph';
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
@@ -73,9 +71,9 @@ export function EqualizerView() {
   const [filter, setFilter] = useState('');
 
   const curve = settings ? activeCurve(settings) : null;
-  const filters = useMemo(() => (curve ? curveFilters(curve) : []), [curve]);
-  // At the playing stream's rate, as the core computes it.
-  const boost = useMemo(() => maxBoostDb(filters, sampleRate || DRAW_RATE), [filters, sampleRate]);
+  // Solved and designed by the core, at the playing stream's rate.
+  const response = useEqResponse(curve, sampleRate);
+  const boost = response?.maxBoostDb ?? 0;
 
   if (!settings || !curve) {
     return (
@@ -307,6 +305,7 @@ export function EqualizerView() {
         <div className="flex min-w-0 flex-col gap-3">
           <ResponseGraph
             curve={curve}
+            response={response}
             active={active}
             selected={bandSel}
             onSelect={setSelected}
@@ -419,6 +418,7 @@ export function EqualizerView() {
                 </span>
                 <Toggle on={settings.crossfeed} onChange={(crossfeed) => patchDsp({ crossfeed })} label="Headphone crossfeed" />
               </label>
+              {settings.crossfeed && <CrossfeedPresets value={settings.crossfeedPreset} />}
               <label className="flex items-center justify-between gap-2.5">
                 <span className="flex flex-col gap-px">
                   <span className="font-semibold">Auto preamp</span>

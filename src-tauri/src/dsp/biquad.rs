@@ -1,9 +1,16 @@
-//! Second-order IIR filters from Robert Bristow-Johnson's Audio EQ Cookbook,
-//! run in 64-bit float. The UI draws its response curve from the same
-//! formulas, so what is shown is exactly what is heard.
+//! Second-order IIR filters, run in 64-bit float.
+//!
+//! Bands are designed to match their analog prototypes (the Audio EQ
+//! Cookbook's) all the way to Nyquist, where the cookbook's bilinear designs
+//! bend away: see [`super::matched`]. The cookbook's own formulas remain
+//! for what has no matched design here (a shelf whose Q is not Butterworth)
+//! and for the rare band whose matched formulas give no real filter.
+//! The UI draws its curve from these coefficients, so what is shown is
+//! exactly what is heard.
 
 use std::f64::consts::PI;
 
+use super::matched;
 use super::settings::{EqBand, FilterKind};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,9 +23,36 @@ pub struct Coeffs {
 }
 
 impl Coeffs {
-    /// Coefficients for `band` at sample rate `fs`. The centre frequency is
-    /// kept below Nyquist so high bands stay stable at low sample rates.
+    /// Passes the signal through unchanged.
+    pub const IDENTITY: Self = Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0 };
+
+    /// Coefficients for `band` at sample rate `fs`: the matched design where
+    /// there is one. A flat peak or shelf is exactly the identity.
     pub fn for_band(band: &EqBand, fs: f64) -> Self {
+        let gain_kind = matches!(band.kind, FilterKind::Peak | FilterKind::LowShelf | FilterKind::HighShelf);
+        if gain_kind && band.gain_db == 0.0 {
+            return Self::IDENTITY;
+        }
+        // Kept just below Nyquist, where the designs are defined.
+        let f0 = band.freq.min(fs * 0.49).max(1.0);
+        let w0 = 2.0 * PI * f0 / fs;
+        let q = band.q.max(0.05);
+        let matched = match band.kind {
+            FilterKind::Peak => matched::peak(w0, band.gain_db, q),
+            FilterKind::LowPass => matched::low_pass(w0, q),
+            FilterKind::HighPass => matched::high_pass(w0, q),
+            FilterKind::Notch => matched::notch(w0, q),
+            FilterKind::LowShelf | FilterKind::HighShelf if matched::is_butterworth(q) => {
+                matched::shelf(2.0 * f0 / fs, 10f64.powf(band.gain_db / 20.0), band.kind == FilterKind::HighShelf)
+            }
+            FilterKind::LowShelf | FilterKind::HighShelf => None,
+        };
+        matched.unwrap_or_else(|| Self::cookbook(band, fs))
+    }
+
+    /// The Audio EQ Cookbook's bilinear design. The centre frequency is kept
+    /// below Nyquist so high bands stay stable at low sample rates.
+    pub fn cookbook(band: &EqBand, fs: f64) -> Self {
         let f0 = band.freq.min(fs * 0.45).max(1.0);
         let w0 = 2.0 * PI * f0 / fs;
         let (sin, cos) = w0.sin_cos();
@@ -97,7 +131,7 @@ impl State {
     /// Zeroes memories too small to matter, before they turn subnormal.
     pub fn flush_denormals(&mut self) {
         for z in [&mut self.z1, &mut self.z2] {
-            if z.abs() < 1e-30 {
+            if z.abs() < super::DENORMAL {
                 *z = 0.0;
             }
         }

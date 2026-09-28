@@ -25,7 +25,7 @@ import type {
   TrackQuery,
   TrackRow,
 } from '@/types/library';
-import type { DspSettings, DspState, Lyrics, OutputDevices } from '@/types/dsp';
+import type { DspSettings, DspState, EqCurve, EqResponse, Lyrics, OutputDevices } from '@/types/dsp';
 import type { InsertMode, PlayerSnapshot, RepeatMode } from '@/types/player';
 import type { AppInfo, UiPreferences, UiPreferencesPatch } from '@/types/preferences';
 
@@ -63,6 +63,9 @@ export const dspApi = {
   importPresets: () => invoke<number | null>('dsp_import_presets'),
   /** Starts or stops the `audio-analysis` event stream. */
   setAnalysis: (enabled: boolean) => invoke<void>('dsp_set_analysis', { enabled }),
+  /** A curve's response (dB) at `freqs`, as the core plays it at `rate`. */
+  eqResponse: (curve: EqCurve, rate: number, freqs: number[]) =>
+    invoke<EqResponse>('dsp_eq_response', { curve, rate, freqs }),
 };
 
 export const outputApi = {

@@ -6,15 +6,14 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use super::crossfeed::CrossfeedPreset;
+
 pub const MAX_PARAMETRIC_BANDS: usize = 10;
 pub const GRAPHIC_10: [f64; 10] = [31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0];
 pub const GRAPHIC_31: [f64; 31] = [
     20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0,
     1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0, 20000.0,
 ];
-/// Bandwidths matching one octave and one third of an octave.
-pub const GRAPHIC_10_Q: f64 = 1.41;
-pub const GRAPHIC_31_Q: f64 = 4.32;
 pub const MAX_GAIN_DB: f64 = 12.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -101,7 +100,7 @@ pub fn default_parametric() -> Vec<EqBand> {
 }
 
 impl EqCurve {
-    fn sanitize(&mut self) {
+    pub(crate) fn sanitize(&mut self) {
         self.parametric.truncate(MAX_PARAMETRIC_BANDS);
         self.parametric.iter_mut().for_each(EqBand::sanitize);
         fix_len(&mut self.graphic10, 10);
@@ -110,23 +109,14 @@ impl EqCurve {
         self.treble_db = finite_or(self.treble_db, 0.0).clamp(-MAX_GAIN_DB, MAX_GAIN_DB);
     }
 
-    /// The curve as a fixed row of filter slots: every EQ band (flat and
-    /// disabled ones too, so a band that changes never disturbs the others),
-    /// then bass and treble.
-    pub fn slots(&self) -> Vec<EqBand> {
-        let mut out: Vec<EqBand> = match self.mode {
-            EqMode::Parametric => self.parametric.clone(),
-            EqMode::Graphic10 => graphic(&GRAPHIC_10, &self.graphic10, GRAPHIC_10_Q),
-            EqMode::Graphic31 => graphic(&GRAPHIC_31, &self.graphic31, GRAPHIC_31_Q),
-        };
-        out.push(EqBand { enabled: true, kind: FilterKind::LowShelf, freq: 100.0, gain_db: self.bass_db, q: 0.7 });
-        out.push(EqBand { enabled: true, kind: FilterKind::HighShelf, freq: 8000.0, gain_db: self.treble_db, q: 0.7 });
-        out
+    /// Bass (low shelf, 100 Hz) and treble (high shelf, 8 kHz): the last
+    /// two filter slots of every curve, flat ones included.
+    pub fn tone_slots(&self) -> [EqBand; 2] {
+        [
+            EqBand { enabled: true, kind: FilterKind::LowShelf, freq: 100.0, gain_db: self.bass_db, q: 0.7 },
+            EqBand { enabled: true, kind: FilterKind::HighShelf, freq: 8000.0, gain_db: self.treble_db, q: 0.7 },
+        ]
     }
-}
-
-fn graphic(freqs: &[f64], gains: &[f64], q: f64) -> Vec<EqBand> {
-    freqs.iter().zip(gains).map(|(&freq, &gain_db)| EqBand::peak(freq, gain_db, q)).collect()
 }
 
 fn fix_len(values: &mut Vec<f64>, len: usize) {
@@ -188,6 +178,9 @@ pub struct DspSettings {
     /// 0 (mono) … 2 (twice as wide); 1 leaves the image alone.
     pub width: f64,
     pub crossfeed: bool,
+    /// Which bs2b preset the crossfeed uses (added later: older saved
+    /// settings get the default).
+    pub crossfeed_preset: CrossfeedPreset,
     pub replay_gain: ReplayGainMode,
     pub replay_gain_preamp_db: f64,
     /// Gain for files without ReplayGain tags while ReplayGain is on. 0 dB
@@ -214,6 +207,7 @@ impl Default for DspSettings {
             balance: 0.0,
             width: 1.0,
             crossfeed: false,
+            crossfeed_preset: CrossfeedPreset::Default,
             replay_gain: ReplayGainMode::Album,
             replay_gain_preamp_db: 0.0,
             replay_gain_fallback_db: 0.0,
@@ -323,22 +317,6 @@ mod tests {
     }
 
     #[test]
-    fn every_band_keeps_its_slot_then_bass_and_treble() {
-        let mut curve = EqCurve::default();
-        let slots = curve.slots();
-        assert_eq!(slots.len(), 8 + 2);
-        assert!(slots.iter().all(|b| b.gain_db == 0.0), "a flat curve has only flat slots");
-        curve.parametric[3].enabled = false;
-        assert_eq!(curve.slots().len(), 10, "disabled bands keep their slot");
-        curve.bass_db = 3.0;
-        let bass = curve.slots()[8];
-        assert_eq!((bass.kind, bass.freq, bass.gain_db), (FilterKind::LowShelf, 100.0, 3.0));
-        curve.mode = EqMode::Graphic31;
-        assert_eq!(curve.slots().len(), 31 + 2);
-        assert_eq!(curve.slots()[32].kind, FilterKind::HighShelf);
-    }
-
-    #[test]
     fn migrating_moves_only_old_defaults() {
         let old: DspSettings = serde_json::from_str(r#"{"replayGainFallbackDb":-8}"#).unwrap();
         assert_eq!(old.version, 1);
@@ -359,5 +337,6 @@ mod tests {
         assert_eq!(s.auto_preamp_allowance_db, 3.0);
         assert_eq!(s.a.parametric.len(), 8);
         assert_eq!(s.replay_gain, ReplayGainMode::Album);
+        assert_eq!(s.crossfeed_preset, CrossfeedPreset::Default);
     }
 }

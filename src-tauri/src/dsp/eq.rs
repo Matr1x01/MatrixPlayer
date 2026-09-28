@@ -97,21 +97,28 @@ impl Chain {
     }
 
     /// Whether `bands` can be glided to: the same slots, of the same kinds,
-    /// and no band that shapes the sound switched on or off.
+    /// and no band that shapes the sound switched on or off (a band still
+    /// gliding towards flat is shaping it now).
     fn glides_to(&self, bands: &[EqBand]) -> bool {
         self.slots.len() == bands.len()
             && self.slots.iter().zip(bands).all(|(slot, band)| {
                 let old = &slot.target;
-                old.kind == band.kind && (old.enabled == band.enabled || (is_flat(old) && is_flat(band)))
+                old.kind == band.kind
+                    && (old.enabled == band.enabled || (is_flat(&slot.now) && is_flat(old) && is_flat(band)))
             })
     }
 
     fn retarget(&mut self, bands: &[EqBand]) {
-        for (slot, band) in self.slots.iter_mut().zip(bands) {
+        let ch = self.channels;
+        for (i, (slot, band)) in self.slots.iter_mut().zip(bands).enumerate() {
             slot.target = *band;
             // Switching a flat band on or off changes nothing audible.
             slot.now.enabled = band.enabled;
+            let was_live = slot.live;
             slot.live = is_live(&slot.now);
+            if was_live && !slot.live {
+                self.states[i * ch..(i + 1) * ch].fill(State::default());
+            }
             self.moving |= slot.now != slot.target;
         }
         self.until_step = 0;
@@ -257,6 +264,9 @@ impl Equalizer {
     /// A new stream format. Filters are recomputed for the rate; a crossfade
     /// under way is cut short (the stream changes here anyway).
     pub fn set_format(&mut self, rate: f64, channels: usize) {
+        if rate == self.rate && channels == self.channels {
+            return;
+        }
         self.rate = rate;
         self.channels = channels;
         self.fade_len = crossfade_frames(rate);
@@ -286,12 +296,21 @@ impl Equalizer {
             self.fade_left = self.fade_len;
         }
         self.max_boost_db = max_boost_db(&self.chain.target_coeffs(), self.rate);
+        if let Some((_, bands)) = &self.pending {
+            // Heard as soon as the crossfade ends, perhaps mid-buffer: auto
+            // preamp and the limiter must already allow for it.
+            let waiting: Vec<Coeffs> =
+                bands.iter().filter(|b| is_live(b)).map(|b| Coeffs::for_band(b, self.rate)).collect();
+            self.max_boost_db = self.max_boost_db.max(max_boost_db(&waiting, self.rate));
+        }
     }
 
     /// Filters `samples`. Returns true when the equalizer settled (a
     /// crossfade or a glide ended, or a change that waited for one was
     /// applied): whether it is engaged, and its largest boost, may differ.
     pub fn process(&mut self, samples: &mut [f64]) -> bool {
+        let whole = samples.len() / self.channels * self.channels;
+        let samples = &mut samples[..whole];
         let was_moving = self.chain.moving;
         if self.fade_left == 0 {
             self.chain.process(samples);
@@ -351,10 +370,12 @@ impl Equalizer {
         self.fade_left > 0
     }
 
-    /// Whether any band shapes the sound: now, once its glide lands, or in
-    /// the chain being crossfaded away.
+    /// Whether any band shapes the sound: now, once its glide lands, in the
+    /// chain being crossfaded away, or in a change waiting to come in.
     pub fn engaged(&self) -> bool {
-        self.chain.engaged() || (self.fade_left > 0 && self.old.engaged())
+        self.chain.engaged()
+            || (self.fade_left > 0 && self.old.engaged())
+            || self.pending.as_ref().is_some_and(|(_, bands)| bands.iter().any(is_live))
     }
 
     /// The largest boost of the curve being moved to, at the stream's rate.
@@ -375,4 +396,28 @@ impl Equalizer {
 
 fn crossfade_frames(rate: f64) -> usize {
     ((CROSSFADE_S * rate) as usize).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A buffer that is not a whole number of frames (never sent by
+    /// GStreamer, but the audio thread must not hang on one): the stray
+    /// sample is left alone.
+    #[test]
+    fn a_partial_frame_while_gliding_returns() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut eq = Equalizer::new(48_000.0, 2);
+            let curve = Some((AbSlot::A, EqMode::Parametric));
+            eq.update(curve, vec![EqBand::peak(1000.0, 6.0, 1.0)]);
+            eq.process(&mut vec![0.1; 2 * 2048]);
+            eq.update(curve, vec![EqBand::peak(1000.0, 0.0, 1.0)]);
+            eq.process(&mut [0.1, 0.1, 0.1]);
+            tx.send(()).unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(3)).is_ok(), "Equalizer::process never returned");
+    }
 }

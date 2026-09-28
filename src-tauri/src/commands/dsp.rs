@@ -7,8 +7,9 @@ use tokio::sync::oneshot;
 
 use crate::audio::output::{self, OutputBackend, OutputDevice};
 use crate::database::settings;
+use crate::dsp::graphic::EqResponse;
 use crate::dsp::service::DspState;
-use crate::dsp::settings::DspSettings;
+use crate::dsp::settings::{DspSettings, EqCurve};
 use crate::error::{AppError, AppResult};
 use crate::player::{OUTPUT_DEVICE_KEY, PlayerCommand};
 use crate::state::AppState;
@@ -85,6 +86,22 @@ pub async fn dsp_import_presets(app: AppHandle, state: State<'_, AppState>) -> A
     let Some(file) = picked.await.map_err(|_| AppError::PlayerUnavailable)? else { return Ok(None) };
     let path = file.into_path().map_err(|_| AppError::InvalidArgument("not a local file".into()))?;
     state.dsp.import_presets(&path).await.map(Some)
+}
+
+/// The frequency response of `curve` as the core plays it at `rate`, at
+/// each of `freqs` (Hz), for drawing. Graphic bands are solved as in
+/// playback, so the curve on screen is the one heard.
+#[tauri::command]
+pub async fn dsp_eq_response(
+    state: State<'_, AppState>,
+    curve: EqCurve,
+    rate: u32,
+    freqs: Vec<f64>,
+) -> AppResult<EqResponse> {
+    if freqs.len() > 4096 {
+        return Err(AppError::InvalidArgument("too many frequencies".into()));
+    }
+    Ok(state.dsp.control().eq_response(curve, rate, &freqs))
 }
 
 /// Starts or stops the `audio-analysis` event stream (visualizer, meters).

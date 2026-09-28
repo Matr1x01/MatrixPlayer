@@ -2,12 +2,13 @@
 //!
 //! ```text
 //! F64 in ─ ReplayGain × preamp ─ EQ ─ balance ─ width ─ crossfeed
-//!        ─ fade ─ peak limiter ─ volume ─ F64 out
+//!        ─ fade ─ look-ahead limiter ─ volume ─ F64 out
 //! ```
 //!
 //! Stages that are neutral are skipped outright, so with everything off and
 //! the volume at 100% the samples pass through untouched, full-scale peaks
-//! included. ReplayGain values come from the tag events
+//! included; they only come out 1.5 ms later, the limiter's constant
+//! look-ahead. ReplayGain values come from the tag events
 //! that travel with the audio, so at a gapless join the new track's gain
 //! starts on exactly its first sample.
 
@@ -18,14 +19,12 @@ use gstreamer as gst;
 use serde::Serialize;
 
 use super::analysis::AnalysisTap;
+use super::crossfeed::{Crossfeed, CrossfeedPreset};
 use super::eq::Equalizer;
+use super::graphic::{GraphicCache, curve_slots};
+use super::limiter::{CEILING, Limiter};
 use super::settings::{AbSlot, EqCurve, ReplayGainMode};
 
-/// Samples above this are pulled down by the limiter (−0.1 dBFS).
-const LIMIT: f64 = 0.988_553;
-const LIMITER_RELEASE_S: f64 = 0.08;
-const CROSSFEED_HZ: f64 = 700.0;
-const CROSSFEED_LEVEL: f64 = 0.3;
 /// Changes of static gain are spread over this long, to avoid zipper noise.
 const GAIN_RAMP_S: f64 = 0.02;
 /// Length of the soft fades on pause, resume and seek.
@@ -36,9 +35,6 @@ const VOLUME_SMOOTH_S: f64 = 0.01;
 /// Closer than this, the smoothed volume lands exactly on its target
 /// (−120 dB: far below anything audible), so unity and mute are exact.
 const VOLUME_SNAP: f64 = 1e-6;
-/// Filter memories below this are flushed to zero, so a decaying tail never
-/// drops into subnormal numbers, which are very slow on most CPUs.
-const DENORMAL: f64 = 1e-30;
 
 /// The EQ curve being heard.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,7 +55,8 @@ pub struct Params {
     pub auto_preamp_allowance_db: Option<f64>,
     pub balance: f64,
     pub width: f64,
-    pub crossfeed: bool,
+    /// The crossfeed preset, `None` while it is off.
+    pub crossfeed: Option<CrossfeedPreset>,
     pub replay_gain: ReplayGainMode,
     pub replay_gain_preamp_db: f64,
     pub replay_gain_fallback_db: f64,
@@ -76,7 +73,7 @@ impl Default for Params {
             auto_preamp_allowance_db: None,
             balance: 0.0,
             width: 1.0,
-            crossfeed: false,
+            crossfeed: None,
             replay_gain: ReplayGainMode::Off,
             replay_gain_preamp_db: 0.0,
             replay_gain_fallback_db: 0.0,
@@ -203,6 +200,8 @@ pub struct Processor {
     rate: f64,
     channels: usize,
     eq: Equalizer,
+    /// The graphic EQ's solver for the layout and rate in use.
+    graphic: GraphicCache,
     rg: RgTags,
     /// Target static gain (ReplayGain × preamp) and the gain now, ramped.
     gain_target: f64,
@@ -210,11 +209,9 @@ pub struct Processor {
     fade_now: f64,
     fade_target: f64,
     fade_step: f64,
-    limiter_env: f64,
-    limiter_release: f64,
-    limited_frames: u64,
+    limiter: Limiter,
     /// Something upstream of the limiter can push peaks up (a boost, the
-    /// EQ, a wider image); otherwise it is skipped and leaves samples alone.
+    /// EQ, a wider image); otherwise it only delays the samples.
     limiter_needed: bool,
     /// The volume heard now, gliding towards the shared target.
     volume_now: f64,
@@ -222,48 +219,53 @@ pub struct Processor {
     /// Nothing processed yet: the first buffer takes the volume as set,
     /// rather than gliding to it from unity.
     fresh: bool,
-    xfeed_lp: [f64; 2],
-    xfeed_a: f64,
+    crossfeed: Crossfeed,
     segment: Option<gst::FormattedSegment<gst::ClockTime>>,
     status: DspStatus,
 }
 
 impl Processor {
     pub fn new(shared: Arc<Shared>) -> Self {
-        Self {
+        let mut processor = Self {
             shared,
             seen: 0,
             params: Params::default(),
-            rate: 48_000.0,
-            channels: 2,
+            rate: 0.0,
+            channels: 0,
             eq: Equalizer::new(48_000.0, 2),
+            graphic: GraphicCache::default(),
             rg: RgTags::default(),
             gain_target: 1.0,
             gain_now: 1.0,
             fade_now: 1.0,
             fade_target: 1.0,
             fade_step: 0.0,
-            limiter_env: 1.0,
-            limiter_release: 0.0,
-            limited_frames: 0,
+            limiter: Limiter::new(48_000.0, 2),
             limiter_needed: false,
             volume_now: 1.0,
             volume_coeff: 1.0,
             fresh: true,
-            xfeed_lp: [0.0; 2],
-            xfeed_a: 0.0,
+            crossfeed: Crossfeed::new(CrossfeedPreset::Default, 48_000.0),
             segment: None,
             status: DspStatus::default(),
-        }
+        };
+        processor.set_format(48_000, 2);
+        processor
     }
 
-    /// New stream format: filters are recomputed for the sample rate.
+    /// New stream format: filters are recomputed for the sample rate. The
+    /// same format again (a gapless join announces it anew) changes
+    /// nothing, so filter memories and the limiter's delay line carry over.
     pub fn set_format(&mut self, rate: u32, channels: u32) {
-        self.rate = f64::from(rate.max(1));
-        self.channels = channels.max(1) as usize;
-        self.limiter_release = 1.0 - (-1.0 / (LIMITER_RELEASE_S * self.rate)).exp();
+        let (rate_hz, channels_n) = (f64::from(rate.max(1)), channels.max(1) as usize);
+        if rate_hz == self.rate && channels_n == self.channels {
+            return;
+        }
+        self.rate = rate_hz;
+        self.channels = channels_n;
+        self.limiter.set_format(self.rate, self.channels);
         self.volume_coeff = 1.0 - (-1.0 / (VOLUME_SMOOTH_S * self.rate)).exp();
-        self.xfeed_a = (-2.0 * std::f64::consts::PI * CROSSFEED_HZ / self.rate).exp();
+        self.tune_crossfeed();
         self.status.sample_rate = rate;
         self.status.channels = channels;
         self.eq.set_format(self.rate, self.channels);
@@ -308,6 +310,9 @@ impl Processor {
         self.volume_now = self.shared.volume();
         self.shared.tap.reset();
         self.sync_params();
+        // Glides landed and a waiting curve came in at once: the boost and
+        // whether the limiter is needed may have changed with them.
+        self.update_gain();
         if self.params.soft_fades {
             // The new position starts from silence instead of a jump.
             self.fade_now = 0.0;
@@ -332,7 +337,7 @@ impl Processor {
             return;
         }
         // A gain ramping down from a boost can still push this buffer over.
-        let limiter_on = self.limiter_needed || self.gain_now > 1.0 || self.limiter_env < 1.0;
+        let limiter_on = self.limiter_needed || self.gain_now > 1.0;
 
         // Static gain, ramped towards its target.
         let ramp_step = 1.0 / (GAIN_RAMP_S * self.rate);
@@ -375,9 +380,10 @@ impl Processor {
             }
         }
 
-        if limiter_on {
-            self.limit(samples);
-        }
+        // Always through the delay line, so the latency never changes; it
+        // only looks for peaks when something can have raised them, or while
+        // it is still recovering.
+        self.limiter.process(samples, limiter_on);
         self.apply_volume(samples);
         self.flush_denormals();
 
@@ -386,8 +392,13 @@ impl Processor {
             self.segment.as_ref().and_then(|seg| seg.to_running_time(pts + duration))
         });
         if let Some(rt) = rt_end {
-            self.shared.processed_rt.store(rt.nseconds(), Ordering::Relaxed);
+            // What happened before the limiter to the last sample in (a
+            // fade, an EQ change) reaches the output one look-ahead later.
+            let lookahead = (self.limiter.delay() as f64 / self.rate * 1e9) as u64;
+            self.shared.processed_rt.store(rt.nseconds() + lookahead, Ordering::Relaxed);
         }
+        // The samples out are rendered at this buffer's own timestamps, so
+        // the analysis needs no shift.
         self.shared.tap.push(samples, ch, self.rate as u32, rt_end);
         self.publish_status();
     }
@@ -410,16 +421,8 @@ impl Processor {
                 frame[1] = mid - side;
             }
         }
-        if p.crossfeed {
-            let a = self.xfeed_a;
-            let norm = 1.0 / (1.0 + CROSSFEED_LEVEL);
-            for frame in samples.chunks_exact_mut(2) {
-                self.xfeed_lp[0] = self.xfeed_lp[0] * a + frame[0] * (1.0 - a);
-                self.xfeed_lp[1] = self.xfeed_lp[1] * a + frame[1] * (1.0 - a);
-                let (l, r) = (frame[0], frame[1]);
-                frame[0] = (l + CROSSFEED_LEVEL * self.xfeed_lp[1]) * norm;
-                frame[1] = (r + CROSSFEED_LEVEL * self.xfeed_lp[0]) * norm;
-            }
+        if p.crossfeed.is_some() {
+            self.crossfeed.run(samples);
         }
     }
 
@@ -445,8 +448,8 @@ impl Processor {
     /// Filter, crossfeed and limiter memories, as after silence.
     fn clear_memories(&mut self) {
         self.eq.clear();
-        self.xfeed_lp = [0.0; 2];
-        self.limiter_env = 1.0;
+        self.crossfeed.clear();
+        self.limiter.clear();
     }
 
     /// A stream starting from rest: nothing of the previous one (its filter
@@ -458,40 +461,18 @@ impl Processor {
         self.fade_target = 1.0;
         self.volume_now = self.shared.volume();
         self.shared.tap.reset();
+        self.update_gain();
     }
 
     fn flush_denormals(&mut self) {
         self.eq.flush_denormals();
-        for v in &mut self.xfeed_lp {
-            if v.abs() < DENORMAL {
-                *v = 0.0;
-            }
-        }
+        self.crossfeed.flush_denormals();
     }
 
-    /// Instant attack, smooth release: overs are caught on their first
-    /// sample and the gain recovers over ~80 ms.
-    fn limit(&mut self, samples: &mut [f64]) {
-        let ch = self.channels;
-        for frame in samples.chunks_exact_mut(ch) {
-            let peak = frame.iter().fold(0.0f64, |m, s| m.max(s.abs()));
-            let needed = if peak > LIMIT { LIMIT / peak } else { 1.0 };
-            if needed < self.limiter_env {
-                self.limiter_env = needed;
-            } else if self.limiter_env < 1.0 {
-                // Recover, but never so far that this frame goes over.
-                self.limiter_env = (self.limiter_env + (1.0 - self.limiter_env) * self.limiter_release).min(needed);
-                if self.limiter_env > 0.999_999 {
-                    self.limiter_env = 1.0;
-                }
-            }
-            if self.limiter_env < 1.0 {
-                self.limited_frames += 1;
-                for s in frame {
-                    *s *= self.limiter_env;
-                }
-            }
-        }
+    /// Crossfeed coefficients for the preset and rate, keeping its memory.
+    fn tune_crossfeed(&mut self) {
+        let preset = self.params.crossfeed.unwrap_or_default();
+        self.crossfeed.retune(Crossfeed::new(preset, self.rate));
     }
 
     fn sync_params(&mut self) {
@@ -502,9 +483,13 @@ impl Processor {
         self.seen = version;
         let params = self.shared.params.lock().unwrap().clone();
         let eq_changed = params.eq != self.params.eq;
+        let crossfeed_changed = params.crossfeed != self.params.crossfeed;
         self.params = params;
         if eq_changed {
             self.update_eq();
+        }
+        if crossfeed_changed {
+            self.tune_crossfeed();
         }
         self.update_gain();
     }
@@ -521,9 +506,11 @@ impl Processor {
     }
 
     /// Hands the curve to the equalizer, which glides or crossfades to it.
+    /// Graphic bands are solved at the stream's rate (a small least-squares
+    /// solve, only when the curve or the rate changes).
     fn update_eq(&mut self) {
         let (curve, bands) = match &self.params.eq {
-            Some(spec) => (Some((spec.slot, spec.curve.mode)), spec.curve.slots()),
+            Some(spec) => (Some((spec.slot, spec.curve.mode)), curve_slots(&spec.curve, self.rate, &mut self.graphic)),
             None => (None, Vec::new()),
         };
         self.eq.update(curve, bands);
@@ -551,13 +538,14 @@ impl Processor {
             },
         };
         let mut rg_linear = db_to_linear(gain_db);
-        // Boosted tracks land just below the limiter's threshold, so it
-        // never has to touch a track whose peak tag is right.
+        // Boosted tracks land at the limiter's ceiling, so it never has to
+        // touch a track whose peak tag is right. (Tags hold sample peaks;
+        // what the true peak adds on top, the limiter takes.)
         if p.clipping_prevention
             && let Some(peak) = peak.filter(|p| *p > 0.0)
-            && peak * rg_linear > LIMIT
+            && peak * rg_linear > CEILING
         {
-            rg_linear = LIMIT / peak;
+            rg_linear = CEILING / peak;
         }
         // Auto preamp takes back only the boost beyond the allowance, and
         // the same for every track, so ReplayGain's levels stay matched.
@@ -565,15 +553,15 @@ impl Processor {
         let auto_db = p.auto_preamp_allowance_db.map_or(0.0, |allowance| (boost - allowance).max(0.0));
         self.gain_target = rg_linear * db_to_linear(p.preamp_db - auto_db);
         // The EQ counts even when it only cuts: shifting phases can raise
-        // peaks. Balance, fades and a narrower image only ever lower them.
-        self.limiter_needed = self.gain_target > 1.0 || self.eq.engaged() || p.width > 1.0;
+        // peaks, and so can the crossfeed, adding up opposite edges of the
+        // two channels. Balance, fades and a narrower image only lower them.
+        self.limiter_needed = self.gain_target > 1.0 || self.eq.engaged() || p.width > 1.0 || p.crossfeed.is_some();
         self.status.replay_gain_source = source;
         self.status.replay_gain_db = linear_to_db(rg_linear);
     }
 
     fn publish_status(&mut self) {
-        self.status.limiting = self.limited_frames > 0;
-        self.limited_frames = 0;
+        self.status.limiting = self.limiter.take_limited() > 0;
         let changed = {
             let mut shared = self.shared.status.lock().unwrap();
             let changed = *shared != self.status;
@@ -622,13 +610,30 @@ mod tests {
             .collect()
     }
 
+    /// Processes `input` followed by enough silence to flush it through the
+    /// limiter's look-ahead, and returns what came out for it.
+    fn run(p: &mut Processor, input: &[f64]) -> Vec<f64> {
+        let lag = p.limiter.delay() * p.channels;
+        let mut samples = input.to_vec();
+        samples.extend(std::iter::repeat_n(0.0, lag));
+        p.process(&mut samples, None);
+        samples.split_off(lag)
+    }
+
+    /// The output is exactly the input, one look-ahead later (silence first).
+    fn assert_delayed(p: &Processor, output: &[f64], input: &[f64]) {
+        let lag = p.limiter.delay() * p.channels;
+        assert!(output[..lag].iter().all(|s| *s == 0.0));
+        assert_eq!(&output[lag..], &input[..input.len() - lag]);
+    }
+
     #[test]
     fn neutral_settings_leave_samples_untouched() {
         let mut p = processor(Params::default());
         let input = sine(4800, 0.5);
         let mut samples = input.clone();
         p.process(&mut samples, None);
-        assert_eq!(samples, input);
+        assert_delayed(&p, &samples, &input);
     }
 
     /// With everything off and the volume at 100%, full-scale masters come
@@ -641,7 +646,7 @@ mod tests {
             let mut p = processor(Params::default());
             let mut samples = input.clone();
             p.process(&mut samples, None);
-            assert_eq!(samples, input);
+            assert_delayed(&p, &samples, &input);
             assert!(!p.status.limiting);
         }
     }
@@ -714,15 +719,11 @@ mod tests {
         shared.set_volume(0.25);
         let mut p = Processor::new(shared.clone());
         p.set_format(48_000, 1);
-        let mut samples = vec![1.0; 4];
-        p.process(&mut samples, None);
-        assert_eq!(samples, [0.25; 4], "no ramp from unity on the first buffer");
+        assert_eq!(run(&mut p, &[1.0; 4]), [0.25; 4], "no ramp from unity on the first buffer");
 
         shared.set_volume(1.0);
         shared.restart();
-        let mut samples = vec![1.0; 4];
-        p.process(&mut samples, None);
-        assert_eq!(samples, [1.0; 4], "nor after the pipeline was reset");
+        assert_eq!(run(&mut p, &[1.0; 4]), [1.0; 4], "nor after the pipeline was reset");
     }
 
     #[test]
@@ -763,7 +764,7 @@ mod tests {
             boosted.get_mut().unwrap().add::<gst::tags::AlbumGain>(&10.0, gst::TagMergeMode::Append);
             p.tags(&boosted);
         }
-        assert!((p.status.replay_gain_db - linear_to_db(LIMIT / 0.9)).abs() < 1e-6);
+        assert!((p.status.replay_gain_db - linear_to_db(CEILING / 0.9)).abs() < 1e-6);
 
         p.stream_start();
         assert_eq!(p.status.replay_gain_source, RgSource::Untagged, "a new track forgets the old tags");
@@ -775,21 +776,17 @@ mod tests {
         let mut samples = sine(48_000, 0.9);
         p.process(&mut samples, None);
         let peak = samples.iter().fold(0.0f64, |m, s| m.max(s.abs()));
-        assert!(peak <= LIMIT + 1e-9, "peak {peak}");
+        assert!(peak <= CEILING + 1e-12, "peak {peak}");
         assert!(p.status.limiting);
     }
 
     #[test]
     fn width_zero_is_mono_and_balance_pans() {
         let mut p = processor(Params { width: 0.0, ..Params::default() });
-        let mut samples = vec![1.0, 0.0, 0.2, -0.2];
-        p.process(&mut samples, None);
-        assert_eq!(samples, [0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(run(&mut p, &[1.0, 0.0, 0.2, -0.2]), [0.5, 0.5, 0.0, 0.0]);
 
         let mut p = processor(Params { balance: 1.0, ..Params::default() });
-        let mut samples = vec![0.4, 0.4];
-        p.process(&mut samples, None);
-        assert_eq!(samples, [0.0, 0.4]);
+        assert_eq!(run(&mut p, &[0.4, 0.4]), [0.0, 0.4]);
     }
 
     /// Steady-state gain (dB) the processor applies to a 1 kHz sine.
@@ -961,26 +958,162 @@ mod tests {
         let mut p = Processor::new(shared.clone());
         p.set_format(48_000, 2);
         let input = sine(9600, 1.0);
-        let mut samples = input.clone();
-        p.process(&mut samples, None);
-        assert_eq!(samples, input, "an EQ with every band flat");
+        assert_eq!(run(&mut p, &input), input, "an EQ with every band flat");
 
         shared.set_params(Params { eq: graphic([6.0; 10], AbSlot::A), ..Params::default() });
         p.process(&mut sine(9600, 0.1), None);
         shared.set_params(Params::default());
         p.process(&mut sine(9600, 0.1), None);
-        let mut samples = input.clone();
-        p.process(&mut samples, None);
-        assert_eq!(samples, input, "once the EQ has faded out, the limiter is out too");
+        assert_eq!(run(&mut p, &input), input, "once the EQ has faded out, the limiter is out too");
         assert!(!p.status.limiting);
+    }
+
+    /// A gapless join announces the stream anew (stream start, the same
+    /// caps): the EQ's memories, the limiter's delay line and its gain carry
+    /// on as if nothing happened.
+    #[test]
+    fn a_gapless_join_keeps_every_memory() {
+        let params = Params {
+            preamp_db: 9.0,
+            eq: graphic([3.0, 0.0, -2.0, 4.0, 0.0, 6.0, 0.0, 2.0, 0.0, -3.0], AbSlot::A),
+            ..Params::default()
+        };
+        let (mut joined, mut straight) = (processor(params.clone()), processor(params));
+        let mut tone = Tone(0);
+        for block in 0..6 {
+            let input = tone.next(4_801);
+            let (mut a, mut b) = (input.clone(), input);
+            if block == 3 {
+                joined.stream_start();
+                joined.set_format(48_000, 2);
+            }
+            joined.process(&mut a, None);
+            straight.process(&mut b, None);
+            assert_eq!(a, b, "block {block}");
+        }
+        assert!(joined.status.limiting, "the limiter was busy across the join");
+    }
+
+    fn one_band(db: f64, enabled: bool) -> Params {
+        Params { eq: curve(vec![EqBand { enabled, ..EqBand::peak(1000.0, db, 1.0) }]), ..Params::default() }
+    }
+
+    fn play(p: &mut Processor, tone: &mut Tone, frames: usize) -> Vec<f64> {
+        let mut samples = tone.next(frames);
+        p.process(&mut samples, None);
+        samples
+    }
+
+    /// A band gliding back to flat still shapes the sound: switching it off
+    /// then crossfades, and leaves no memory to come back later.
+    #[test]
+    fn switching_a_band_off_mid_glide_neither_clicks_nor_leaves_memory() {
+        // `a` is switched off 256 frames into its glide to 0 dB; `b` only
+        // once the glide has landed.
+        let (sa, sb) = (Arc::new(Shared::new()), Arc::new(Shared::new()));
+        sa.set_params(one_band(6.0, true));
+        sb.set_params(one_band(6.0, true));
+        let (mut a, mut b) = (Processor::new(sa.clone()), Processor::new(sb.clone()));
+        let (mut ta, mut tb) = (Tone(0), Tone(0));
+        play(&mut a, &mut ta, 24_011);
+        play(&mut b, &mut tb, 24_011);
+        let steady = roughness(&play(&mut a, &mut ta, 4_801));
+        play(&mut b, &mut tb, 4_801);
+
+        sa.set_params(one_band(0.0, true));
+        sb.set_params(one_band(0.0, true));
+        let mut heard = play(&mut a, &mut ta, 256);
+        play(&mut b, &mut tb, 256);
+        sa.set_params(one_band(0.0, false));
+        heard.extend(play(&mut a, &mut ta, 256));
+        play(&mut b, &mut tb, 256);
+        let during = roughness(&heard);
+        assert!(during <= steady * 1.03, "switching off mid-glide stepped by {during:.5}; steady {steady:.5}");
+
+        play(&mut a, &mut ta, 24_000);
+        play(&mut b, &mut tb, 12_000);
+        sb.set_params(one_band(0.0, false));
+        play(&mut b, &mut tb, 12_000);
+        assert!(a.eq.states().iter().all(|s| *s == State::default()), "no memory left in the band switched off");
+
+        // Back on and raised again: both must sound the same.
+        for shared in [&sa, &sb] {
+            shared.set_params(one_band(0.0, true));
+        }
+        play(&mut a, &mut ta, 480);
+        play(&mut b, &mut tb, 480);
+        for shared in [&sa, &sb] {
+            shared.set_params(one_band(6.0, true));
+        }
+        assert_eq!(play(&mut a, &mut ta, 4_800), play(&mut b, &mut tb, 4_800), "stale memory came back");
+    }
+
+    /// A seek or a new stream mid-glide lands the EQ at once; the limiter
+    /// must follow it out, so a flat EQ is bit-exact again.
+    #[test]
+    fn a_seek_or_restart_mid_glide_leaves_a_flat_eq_bit_exact() {
+        for restart in [false, true] {
+            let shared = Arc::new(Shared::new());
+            shared.set_params(one_band(6.0, true));
+            let mut p = Processor::new(shared.clone());
+            p.process(&mut sine(9600, 0.1), None);
+            shared.set_params(one_band(0.0, true));
+            p.process(&mut sine(480, 0.1), None);
+            if restart {
+                shared.restart();
+            } else {
+                p.flush();
+            }
+            let input = sine(9600, 1.0);
+            p.process(&mut input.clone(), None);
+            assert_eq!(run(&mut p, &input), input, "restart {restart}");
+            assert!(!p.limiter_needed && !p.status.limiting);
+        }
+    }
+
+    fn preamped(slot: AbSlot, db: f64) -> Params {
+        Params {
+            eq: Some(EqSpec {
+                slot,
+                curve: EqCurve { parametric: vec![EqBand::peak(1000.0, db, 1.0)], ..EqCurve::default() },
+            }),
+            auto_preamp_allowance_db: Some(0.0),
+            ..Params::default()
+        }
+    }
+
+    /// A curve waiting for a crossfade to end is allowed for before it is
+    /// heard: auto preamp takes its boost back from the start.
+    #[test]
+    fn a_curve_waiting_for_a_crossfade_is_preamped_before_it_is_heard() {
+        let shared = Arc::new(Shared::new());
+        shared.set_params(preamped(AbSlot::A, 0.0));
+        let mut p = Processor::new(shared.clone());
+        let mut tone = Tone(0);
+        play(&mut p, &mut tone, 4800);
+        shared.set_params(preamped(AbSlot::B, 0.0));
+        play(&mut p, &mut tone, 240);
+        shared.set_params(preamped(AbSlot::A, 12.0));
+        let out = play(&mut p, &mut tone, 4096);
+        let tail = out[2 * 2000..].iter().fold(0.0f64, |m, s| m.max(s.abs()));
+        let settled = play(&mut p, &mut tone, 9600)[2 * 4800..].iter().fold(0.0f64, |m, s| m.max(s.abs()));
+        assert!(tail < settled * 1.1, "the waiting boost played unpreamped: {tail:.3} against {settled:.3}");
+
+        // And when a seek brings it in at once.
+        shared.set_params(preamped(AbSlot::B, 0.0));
+        play(&mut p, &mut tone, 240);
+        shared.set_params(preamped(AbSlot::A, 12.0));
+        p.process(&mut [], None);
+        p.flush();
+        assert!((p.gain_target - db_to_linear(-p.eq.max_boost_db())).abs() < 1e-6, "auto preamp not refreshed");
+        assert!(p.limiter_needed);
     }
 
     #[test]
     fn seeks_fade_in_when_soft_fades_are_on() {
         let mut p = processor(Params { soft_fades: true, ..Params::default() });
         p.flush();
-        let mut samples = vec![0.5; 48_000 * 2];
-        p.process(&mut samples, None);
+        let samples = run(&mut p, &[0.5; 48_000 * 2]);
         assert!(samples[0] < 0.01, "starts from silence");
         let halfway = (FADE_S / 2.0 * 48_000.0) as usize * 2;
         assert!((samples[halfway] - 0.25).abs() < 0.01, "{}", samples[halfway]);
@@ -993,8 +1126,7 @@ mod tests {
         let mut p = Processor::new(shared.clone());
         p.set_format(1000, 1);
         shared.fade(0.0, 0.1);
-        let mut samples = vec![1.0; 200];
-        p.process(&mut samples, None);
+        let samples = run(&mut p, &[1.0; 200]);
         assert!((samples[49] - 0.5).abs() < 0.02, "halfway at 50 ms: {}", samples[49]);
         assert_eq!(samples[150], 0.0);
     }

@@ -29,7 +29,11 @@
 
 pub mod analysis;
 pub mod biquad;
+pub mod crossfeed;
 pub mod eq;
+pub mod graphic;
+pub mod limiter;
+pub mod matched;
 pub mod processor;
 pub mod service;
 pub mod settings;
@@ -42,9 +46,14 @@ use gstreamer_audio as gst_audio;
 use tokio::sync::broadcast;
 
 use self::analysis::AnalysisFrame;
+use self::graphic::{EqResponse, GraphicCache, curve_response};
 use self::processor::{DspStatus, EqSpec, Params, Processor, Shared};
-use self::settings::DspSettings;
+use self::settings::{DspSettings, EqCurve};
 use crate::error::AppResult;
+
+/// Filter memories below this are flushed to zero, so a decaying tail never
+/// drops into subnormal numbers, which are very slow on most CPUs.
+pub(crate) const DENORMAL: f64 = 1e-30;
 
 pub struct DspChain {
     bin: gst::Bin,
@@ -96,8 +105,14 @@ impl DspChain {
                 let _ = status.send(s);
             }));
         }
-        let control =
-            Arc::new(DspControl { shared, to_output: to_output.clone(), analysis, status, settings: Mutex::default() });
+        let control = Arc::new(DspControl {
+            shared,
+            to_output: to_output.clone(),
+            analysis,
+            status,
+            settings: Mutex::default(),
+            response_solver: Mutex::default(),
+        });
         Ok(Self { bin, to_output, sink: Mutex::new(None), control, volume: Mutex::new((1.0, false)) })
     }
 
@@ -201,6 +216,8 @@ pub struct DspControl {
     analysis: broadcast::Sender<AnalysisFrame>,
     status: broadcast::Sender<DspStatus>,
     settings: Mutex<DspSettings>,
+    /// The graphic EQ solver for drawing responses (the processor has its own).
+    response_solver: Mutex<GraphicCache>,
 }
 
 impl DspControl {
@@ -213,7 +230,7 @@ impl DspControl {
             auto_preamp_allowance_db: (active && settings.auto_preamp).then_some(settings.auto_preamp_allowance_db),
             balance: settings.balance,
             width: settings.width,
-            crossfeed: settings.crossfeed,
+            crossfeed: settings.crossfeed.then_some(settings.crossfeed_preset),
             replay_gain: settings.replay_gain,
             replay_gain_preamp_db: settings.replay_gain_preamp_db,
             replay_gain_fallback_db: settings.replay_gain_fallback_db,
@@ -226,6 +243,13 @@ impl DspControl {
 
     pub fn settings(&self) -> DspSettings {
         self.settings.lock().unwrap().clone()
+    }
+
+    /// `curve`'s response at `rate` (Hz), as the processor would play it.
+    pub fn eq_response(&self, mut curve: EqCurve, rate: u32, freqs: &[f64]) -> EqResponse {
+        curve.sanitize();
+        let rate = f64::from(rate.clamp(8_000, 768_000));
+        curve_response(&curve, rate, freqs, &mut self.response_solver.lock().unwrap())
     }
 
     /// Whether shuffle is on, for "Smart" ReplayGain.
