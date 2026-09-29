@@ -18,10 +18,12 @@ interface VolumeControlProps {
 export function VolumeControl({ width, showDb, iconSize = 17 }: VolumeControlProps) {
   const volume = usePlayer((s) => s.volume);
   const live = useLiveVolume();
-  const silent = volume.muted || volume.level === 0;
+  const silent = volume.muted || (!volume.locked && volume.level === 0);
+  // Bit-perfect playback plays at 100%: the device's volume sets the level.
+  const lockedTip = volume.locked ? 'Fixed at 100% for bit-perfect playback · use your DAC or amp' : undefined;
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1" data-tip={lockedTip}>
       <IconButton
         icon={silent ? 'volMuted' : 'vol'}
         label={volume.muted ? 'Unmute' : 'Mute'}
@@ -32,7 +34,8 @@ export function VolumeControl({ width, showDb, iconSize = 17 }: VolumeControlPro
       <Slider
         variant="volume"
         label="Volume"
-        value={volume.level}
+        value={volume.locked ? 1 : volume.level}
+        disabled={volume.locked}
         style={{ width, opacity: volume.muted ? 0.5 : 1 }}
         step={0.05}
         valueText={(v) => formatDb(levelToDb(v))}
@@ -40,7 +43,9 @@ export function VolumeControl({ width, showDb, iconSize = 17 }: VolumeControlPro
         onCommit={live.commit}
       />
       {showDb && (
-        <span className="vol-db mono t3 ml-2.5 w-14 text-[11px]">{volume.muted ? 'Muted' : formatDb(volume.gainDb)}</span>
+        <span className="vol-db mono t3 ml-2.5 w-14 text-[11px]">
+          {volume.muted ? 'Muted' : volume.locked ? 'Fixed' : formatDb(volume.gainDb)}
+        </span>
       )}
     </div>
   );

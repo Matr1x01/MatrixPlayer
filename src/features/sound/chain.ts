@@ -121,17 +121,31 @@ export function useChain(): ChainStage[] {
       },
     );
   }
+  if (signal.bitPerfect) {
+    // Nothing in MatrixPlayer changes a sample: every processing stage is
+    // out of the path (its settings are kept for afterwards).
+    for (const stage of stages) {
+      if (stage.key !== 'decode') Object.assign(stage, { value: 'Bypassed · bit-perfect', state: 'off' });
+    }
+  }
+  // Through PipeWire, it may resample after us (the verdict says).
+  const serverResampled = signal.verdict.state === 'resampled' ? signal.verdict : null;
   stages.push(
     {
       key: 'resampler',
       name: 'Resampler',
-      value: resampled ? `${khz(signal.decoded!.sampleRate)} → ${khz(signal.output!.sampleRate)} kHz` : 'Bypassed · native',
-      state: resampled ? 'active' : 'off',
+      value: resampled
+        ? `${khz(signal.decoded!.sampleRate)} → ${khz(signal.output!.sampleRate)} kHz`
+        : serverResampled
+          ? `PipeWire · ${khz(serverResampled.from)} → ${khz(serverResampled.to)} kHz`
+          : 'Bypassed · native',
+      // A warning only where it breaks bit-perfect playback.
+      state: resampled || serverResampled ? (signal.bitPerfect ? 'warn' : 'active') : 'off',
     },
     {
       key: 'output',
       name: 'Output',
-      value: signal.output ? `${formatStreamCompact(signal.output)} · ${outputName}` : outputName,
+      value: `${signal.output ? `${formatStreamCompact(signal.output)} · ` : ''}${outputName}${signal.exclusive ? ' · exclusive' : ''}`,
       state: signal.output ? 'on' : 'off',
     },
   );
@@ -139,7 +153,8 @@ export function useChain(): ChainStage[] {
 }
 
 /** Short list of what is processing the sound, e.g. "EQ, RG, tone". */
-export function processingSummary(settings: DspSettings | null): string {
+export function processingSummary(settings: DspSettings | null, bitPerfect = false): string {
+  if (bitPerfect) return 'None · bit-perfect';
   if (!settings) return '64-bit float';
   const parts: string[] = [];
   if (settings.eqEnabled && !settings.bypass) parts.push('EQ');

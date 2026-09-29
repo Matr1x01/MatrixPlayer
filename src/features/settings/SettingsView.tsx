@@ -54,7 +54,7 @@ const KEYWORDS: Record<Section, string> = {
   library: 'music folders add remove rescan scan tags reread watching moved renamed files',
   playback: 'gapless soft fades replaygain loudness previous restart broken files skip',
   output: 'backend pipewire pulseaudio alsa device headphones dac speakers processing exclusive bit-perfect',
-  dsp: 'equalizer eq signal chain limiter crossfeed dither preamp replaygain',
+  dsp: 'equalizer eq signal chain limiter crossfeed dither preamp replaygain bit-perfect bitperfect exclusive',
   appearance: 'theme dark light accent colour color background density rows interface scale zoom motion animation sidebar',
   nowPlaying: 'visualizer spectrum waveform frequency meters artwork background',
   lyrics: 'lyrics lrc synced embedded sources offset',
@@ -127,10 +127,13 @@ function OutputSettings() {
         </button>
       </SettingRow>
       <SettingRow title="Processing" hint="Precision of MatrixPlayer's own processing">
-        <span className="mono">64-bit float</span>
+        <span className="mono">{signal.bitPerfect ? 'None · bit-perfect' : '64-bit float'}</span>
       </SettingRow>
-      <SettingRow title="Exclusive access" hint="Bypassing the system mixer">
-        <span className="t3">Not available yet: audio goes through the sound server</span>
+      <SettingRow title="Bit-perfect & exclusive access" hint="Samples unchanged; with exclusive access, straight to the device">
+        <button type="button" className="btn gh" onClick={() => navigate('dsp')}>
+          {signal.exclusive ? 'Exclusive' : signal.bitPerfect ? 'Bit-perfect' : 'Off'} · Change
+          <Icon name="chevR" size={14} />
+        </button>
       </SettingRow>
     </>
   );

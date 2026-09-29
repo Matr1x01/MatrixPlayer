@@ -12,6 +12,7 @@
 
 mod engine;
 pub mod output;
+pub mod reserve;
 pub mod waveform;
 
 use std::time::Duration;

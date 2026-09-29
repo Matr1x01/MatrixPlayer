@@ -114,6 +114,8 @@ export interface OutputDevice {
   /** Connection and capabilities, e.g. "USB · up to 32-bit / 384 kHz". */
   detail: string;
   kind: DeviceKind;
+  /** Can be used exclusively (it is an ALSA device). */
+  exclusive: boolean;
 }
 
 export interface OutputDevices {
@@ -121,6 +123,10 @@ export interface OutputDevices {
   devices: OutputDevice[];
   /** Chosen device id; null follows the system default. */
   selected: string | null;
+  /** Bit-perfect playback through the system mixer is on. */
+  bitPerfect: boolean;
+  /** The selected device is held exclusively. */
+  exclusive: boolean;
 }
 
 export interface LyricLine {

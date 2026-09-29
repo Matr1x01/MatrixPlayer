@@ -104,19 +104,35 @@ entries.push(
 
 const empty = params.has('empty');
 const noRoots = params.has('noroots');
+/** `bitperfect=shared` or `bitperfect=exclusive` previews bit-perfect playback. */
+const bitPerfect = params.get('bitperfect');
 const snapshot: PlayerSnapshot = {
   status: empty ? 'idle' : 'playing',
   track: empty ? null : entries[1]!.track,
   positionMs: empty ? 0 : 134000,
   durationMs: empty ? null : 342186,
-  volume: { level: 0.9, muted: false, gainDb: 60 * Math.log10(0.9) },
+  volume: bitPerfect
+    ? { level: 0.9, muted: false, gainDb: 0, locked: true }
+    : { level: 0.9, muted: false, gainDb: 60 * Math.log10(0.9), locked: false },
   queue: { entries: empty ? [] : entries, currentIndex: empty ? null : 1, shuffle: true, repeat: 'off', gapless: true },
   signal: {
     backend: 'pipeWire',
-    device: { id: 'alsa_output.usb-dac', name: 'USB DAC', detail: 'USB · up to 32-bit / 384 kHz', kind: 'usb' },
+    device: { id: 'alsa_output.usb-dac', name: 'USB DAC', detail: 'USB · up to 32-bit / 384 kHz', kind: 'usb', exclusive: true },
     bufferMs: 250,
     decoded: empty ? null : { sampleFormat: 'S24_32LE', bits: 24, float: false, sampleRate: 96000, channels: 2 },
-    output: empty ? null : { sampleFormat: 'F32LE', bits: 32, float: true, sampleRate: 96000, channels: 2 },
+    output: empty
+      ? null
+      : bitPerfect === 'exclusive'
+        ? { sampleFormat: 'S32LE', bits: 32, float: false, sampleRate: 96000, channels: 2 }
+        : { sampleFormat: 'F32LE', bits: 32, float: true, sampleRate: 96000, channels: 2 },
+    exclusive: bitPerfect === 'exclusive',
+    bitPerfect: !!bitPerfect,
+    verdict: !bitPerfect
+      ? { state: 'off' }
+      : bitPerfect === 'exclusive'
+        ? { state: 'yes', shared: false }
+        : { state: 'resampled', from: 96000, to: 48000 },
+    pipewireClock: { rate: 48000, allowedRates: [48000], forceRate: 0 },
   },
   error: null,
 };
@@ -195,11 +211,13 @@ const dspState = (): DspState => ({
 const devices: OutputDevices = {
   backend: 'pipeWire',
   selected: 'alsa_output.usb-dac',
+  bitPerfect: bitPerfect === 'shared',
+  exclusive: bitPerfect === 'exclusive',
   devices: [
-    { id: 'alsa_output.usb-dac', name: 'USB DAC', detail: 'USB · up to 32-bit / 384 kHz', kind: 'usb' },
-    { id: 'alsa_output.pci-analog', name: 'Built-in audio — analog stereo', detail: 'Internal · up to 24-bit / 192 kHz', kind: 'internal' },
-    { id: 'alsa_output.pci-hdmi', name: 'HDMI — living room display', detail: 'HDMI · up to 24-bit / 192 kHz', kind: 'hdmi' },
-    { id: 'bluez_output.headphones', name: 'Bluetooth headphones', detail: 'Bluetooth', kind: 'bluetooth' },
+    { id: 'alsa_output.usb-dac', name: 'USB DAC', detail: 'USB · up to 32-bit / 384 kHz', kind: 'usb', exclusive: true },
+    { id: 'alsa_output.pci-analog', name: 'Built-in audio — analog stereo', detail: 'Internal · up to 24-bit / 192 kHz', kind: 'internal', exclusive: true },
+    { id: 'alsa_output.pci-hdmi', name: 'HDMI — living room display', detail: 'HDMI · up to 24-bit / 192 kHz', kind: 'hdmi', exclusive: true },
+    { id: 'bluez_output.headphones', name: 'Bluetooth headphones', detail: 'Bluetooth', kind: 'bluetooth', exclusive: false },
   ],
 };
 const lyrics: Lyrics = {

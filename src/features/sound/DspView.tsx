@@ -14,6 +14,7 @@ import { run } from '@/stores/toasts';
 import type { DeviceKind, OutputDevices, ReplayGainMode } from '@/types/dsp';
 import type { StreamFormat } from '@/types/player';
 
+import { confirmBitPerfect, verdictText } from './bitPerfect';
 import { CenterSlider, CrossfeedPresets } from './controls';
 import { STAGE_DOT, crossfeedDetail, processingSummary, replayGainText, useChain, type ChainStage } from './chain';
 import { formatGain } from './eqMath';
@@ -137,6 +138,17 @@ export function DspView() {
     void probe();
   };
 
+  const [changingMode, setChangingMode] = useState(false);
+  const selected = devices?.devices.find((d) => d.id === devices.selected) ?? null;
+  const setMode = async (change: () => Promise<void>, confirm?: () => Promise<boolean>) => {
+    if (confirm && !(await confirm())) return;
+    setChangingMode(true);
+    await run(change());
+    setChangingMode(false);
+    void probe();
+  };
+  const verdict = verdictText(signal.verdict);
+
   const jump = (stage: ChainStage) => {
     if (stage.key === 'eq' || stage.key === 'tone') {
       navigate('equalizer');
@@ -168,7 +180,10 @@ export function DspView() {
         ['Output device', signal.device?.name ?? `${backendLabel(signal.backend)} default`],
         ['Output format', signal.output ? formatStream(signal.output) : '—', 'var(--ok)'],
         ['ReplayGain', settings ? replayGainText(settings, dspStatus, playing) : '—'],
-        ['Processing', processingSummary(settings), 'var(--ac)'],
+        ['Processing', processingSummary(settings, signal.bitPerfect), 'var(--ac)'],
+        ...(signal.bitPerfect
+          ? [['Bit-perfect', verdict.detail, verdict.ok ? 'var(--ok)' : 'var(--warn)'] as [string, string, string]]
+          : []),
         [
           'Resampling',
           resampled ? `${khz(signal.decoded!.sampleRate)} → ${khz(signal.output!.sampleRate)} kHz` : 'None',
@@ -189,7 +204,14 @@ export function DspView() {
           </div>
         </div>
         <div className="flex flex-none items-center gap-2">
-          <span className="chip acc h-6 px-2.5">PROCESSED · 64-BIT FLOAT</span>
+          {signal.bitPerfect ? (
+            <span className={`chip ${verdict.ok ? 'ok' : 'warn'} h-6 px-2.5`} data-tip={verdict.detail}>
+              {verdict.label.toUpperCase()}
+              {signal.exclusive ? ' · EXCLUSIVE' : ''}
+            </span>
+          ) : (
+            <span className="chip acc h-6 px-2.5">PROCESSED · 64-BIT FLOAT</span>
+          )}
           <button
             type="button"
             className="btn gh"
@@ -280,8 +302,48 @@ export function DspView() {
               )}
             </div>
             <div className="mt-1 flex flex-col">
-              <Setting title="Exclusive access" hint="Not available yet · audio goes through the system mixer">
-                <Toggle on={false} disabled onChange={() => {}} label="Exclusive access" />
+              <Setting
+                id="dsp-exclusive"
+                title="Exclusive access"
+                hint={
+                  signal.exclusive
+                    ? `MatrixPlayer's alone while it plays · bit-perfect, straight to ${signal.device?.name ?? 'the device'}`
+                    : selected?.exclusive
+                      ? `Plays straight to ${selected.name}, bypassing the system mixer`
+                      : selected
+                        ? 'This device cannot be used exclusively'
+                        : 'Choose a device above to use it exclusively'
+                }
+              >
+                <Toggle
+                  on={signal.exclusive}
+                  disabled={changingMode || (!signal.exclusive && !selected?.exclusive)}
+                  onChange={(on) =>
+                    void setMode(
+                      () => outputApi.setExclusive(on),
+                      on ? () => confirmBitPerfect(selected?.name ?? 'this device') : undefined,
+                    )
+                  }
+                  label="Exclusive access"
+                />
+              </Setting>
+              <Setting
+                id="dsp-bitPerfect"
+                title="Bit-perfect"
+                hint={
+                  signal.exclusive
+                    ? 'Always, with exclusive access'
+                    : signal.bitPerfect
+                      ? verdict.detail
+                      : 'No processing, volume fixed at 100% · through the system mixer'
+                }
+              >
+                <Toggle
+                  on={signal.bitPerfect}
+                  disabled={changingMode || signal.exclusive}
+                  onChange={(on) => void setMode(() => outputApi.setBitPerfect(on), on ? () => confirmBitPerfect() : undefined)}
+                  label="Bit-perfect"
+                />
               </Setting>
               <Setting title="Sample rate" hint={resampled ? 'Resampled for the output' : 'Each track is sent at its own rate'}>
                 <span className="mono text-[11.5px]">{signal.output ? `${khz(signal.output.sampleRate)} kHz` : '—'}</span>

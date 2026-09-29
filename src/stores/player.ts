@@ -22,9 +22,19 @@ export const usePlayer = create<PlayerStore>()(() => ({
   track: null,
   positionMs: 0,
   durationMs: null,
-  volume: { level: 0.8, muted: false, gainDb: null },
+  volume: { level: 0.8, muted: false, gainDb: null, locked: false },
   queue: { entries: [], currentIndex: null, shuffle: false, repeat: 'off', gapless: true },
-  signal: { backend: 'auto', device: null, bufferMs: null, decoded: null, output: null },
+  signal: {
+    backend: 'auto',
+    device: null,
+    bufferMs: null,
+    decoded: null,
+    output: null,
+    exclusive: false,
+    bitPerfect: false,
+    verdict: { state: 'off' },
+    pipewireClock: null,
+  },
   error: null,
 }));
 

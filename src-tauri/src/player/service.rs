@@ -10,13 +10,16 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+use super::bit_perfect::{Mode, verdict};
 use super::queue::Queue;
 use super::{
     EntryId, InsertMode, PlaybackStatus, PlayerError, PlayerEvent, PlayerSnapshot, QueueSnapshot, QueueState,
     RepeatMode, SignalPath, TrackInfo, VolumeState,
 };
 use crate::audio::output::Output;
-use crate::audio::{AudioEngine, EngineError, EngineErrorKind, EngineEvent, EngineMessage, EngineState, StreamFormat};
+use crate::audio::{
+    AudioEngine, EngineError, EngineErrorKind, EngineEvent, EngineMessage, EngineState, OutputBackend, StreamFormat,
+};
 use crate::database::{Database, settings};
 use crate::dsp::DspControl;
 use crate::dsp::processor::FADE_S;
@@ -106,6 +109,12 @@ pub enum PlayerCommand {
     /// fixed when the format is negotiated (dither) takes effect. Only done
     /// when the output takes integer samples: float outputs never dither.
     RenegotiateOutput,
+    /// Reopens the current track where it is, after bit-perfect playback
+    /// was switched on or off (the stream's layout is negotiated anew).
+    Reopen,
+    /// Tells the user about something that happened to the output (another
+    /// program took the device), without changing playback.
+    Notice(PlayerError),
     Insert {
         tracks: Vec<Arc<TrackInfo>>,
         mode: InsertMode,
@@ -434,6 +443,18 @@ impl Player {
             }
             PlayerCommand::SetOutput(output) => self.set_output(*output),
             PlayerCommand::RenegotiateOutput => self.renegotiate_output(),
+            PlayerCommand::Reopen => {
+                self.emit(PlayerEvent::Volume(self.volume_state()));
+                self.emit_signal();
+                match self.resume_point() {
+                    Some(point) => self.resume_at(point),
+                    None => Ok(()),
+                }
+            }
+            PlayerCommand::Notice(error) => {
+                self.emit(PlayerEvent::Error(error));
+                Ok(())
+            }
             PlayerCommand::Insert { tracks, mode, start } => self.insert(tracks, mode, start),
             PlayerCommand::PlayEntry(id) => {
                 self.queue.jump_to(id).ok_or_else(|| AppError::InvalidArgument("no such queue entry".into()))?;
@@ -1267,8 +1288,13 @@ impl Player {
     }
 
     fn volume_state(&self) -> VolumeState {
-        let gain_db = (!self.muted && self.volume > 0.0).then(|| 60.0 * self.volume.log10());
-        VolumeState { level: self.volume, muted: self.muted, gain_db }
+        let locked = self.dsp.bypassed();
+        let gain_db = if locked {
+            (!self.muted).then_some(0.0)
+        } else {
+            (!self.muted && self.volume > 0.0).then(|| 60.0 * self.volume.log10())
+        };
+        VolumeState { level: self.volume, muted: self.muted, gain_db, locked }
     }
 
     async fn persist_volume(&mut self) {
@@ -1322,12 +1348,26 @@ impl Player {
     }
 
     fn signal_path(&self) -> SignalPath {
+        let exclusive = self.engine.exclusive();
+        let bit_perfect = exclusive || self.dsp.bypassed();
+        let mode = match (exclusive, bit_perfect) {
+            (true, _) => Mode::Exclusive,
+            (false, true) => Mode::Shared,
+            (false, false) => Mode::Normal,
+        };
+        // Only PipeWire's own clock matters for a shared stream.
+        let pipewire_clock =
+            (self.engine.backend() == OutputBackend::PipeWire).then(crate::audio::output::pipewire_clock).flatten();
         SignalPath {
             backend: self.engine.backend(),
             device: self.engine.device().cloned(),
             buffer_ms: self.engine.buffer_ms(),
             decoded: self.decoded.clone(),
             output: self.output.clone(),
+            exclusive,
+            bit_perfect,
+            verdict: verdict(mode, self.decoded.as_ref(), self.output.as_ref(), pipewire_clock.as_ref()),
+            pipewire_clock,
         }
     }
 
@@ -1740,7 +1780,7 @@ mod tests {
             log.lock().unwrap().push((std::time::Instant::now(), peak));
             None
         });
-        let output = Output { sink, backend: crate::audio::OutputBackend::Auto, device: None };
+        let output = Output { sink, backend: crate::audio::OutputBackend::Auto, device: None, exclusive: false };
         (output, heard)
     }
 
@@ -1860,7 +1900,7 @@ mod tests {
             }
             gstreamer::PadProbeReturn::Ok
         });
-        (Output { sink, backend: crate::audio::OutputBackend::Auto, device: None }, log)
+        (Output { sink, backend: crate::audio::OutputBackend::Auto, device: None, exclusive: false }, log)
     }
 
     /// A player on a recording output, with the default DSP settings (soft
@@ -1992,7 +2032,7 @@ mod tests {
             true,
         )
         .unwrap();
-        Output { sink: bin.upcast(), backend: crate::audio::OutputBackend::Auto, device: None }
+        Output { sink: bin.upcast(), backend: crate::audio::OutputBackend::Auto, device: None, exclusive: false }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2015,6 +2055,28 @@ mod tests {
         assert!(statuses(&events).contains(&PlaybackStatus::Loading), "reopened: {:?}", statuses(&events));
         let position = h.player.snapshot().await.unwrap().position_ms;
         assert!(position >= 1400, "resumed at {position} ms");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bit_perfect_playback_locks_the_volume_and_reports_the_path() {
+        use super::super::bit_perfect::BitPerfect;
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 4.0, "Long");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        let normal = h.player.snapshot().await.unwrap();
+        assert!(!normal.volume.locked && normal.signal.verdict == BitPerfect::Off);
+
+        h.player.dsp().set_bypass(true);
+        h.player.command(PlayerCommand::Reopen).await.unwrap();
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        let snapshot = h.player.snapshot().await.unwrap();
+        assert!(snapshot.volume.locked, "the volume is fixed at 100%");
+        assert_eq!(snapshot.volume.gain_db, Some(0.0));
+        assert!((snapshot.volume.level - 0.8).abs() < 1e-9, "the slider keeps its place for afterwards");
+        assert!(snapshot.signal.bit_perfect && !snapshot.signal.exclusive);
+        assert_eq!(snapshot.signal.verdict, BitPerfect::Yes { shared: true });
     }
 
     #[tokio::test(flavor = "multi_thread")]

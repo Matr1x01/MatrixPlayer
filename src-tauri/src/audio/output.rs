@@ -8,8 +8,12 @@
 //! provider, so a device picked in the UI is always one the active sink can
 //! open. With no device chosen, the sound server's default is followed,
 //! including when the user switches it elsewhere.
+//!
+//! A device the sound server drives through ALSA can also be opened
+//! exclusively: straight on its hardware PCM, bypassing the server, once
+//! the card has been borrowed from it (see `reserve`).
 
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -74,6 +78,19 @@ pub struct OutputDevice {
     /// Connection and capabilities, e.g. "USB · up to 32-bit / 384 kHz".
     pub detail: String,
     pub kind: DeviceKind,
+    /// The ALSA hardware PCM behind it, when there is one: the device can
+    /// then be opened exclusively.
+    #[serde(skip)]
+    pub pcm: Option<AlsaPcm>,
+    /// Whether it can be opened exclusively (it has an ALSA PCM).
+    pub exclusive: bool,
+}
+
+/// An ALSA hardware PCM: card and device number, as in `hw:2,0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlsaPcm {
+    pub card: u32,
+    pub device: u32,
 }
 
 pub struct Output {
@@ -81,11 +98,17 @@ pub struct Output {
     pub backend: OutputBackend,
     /// The device chosen for this output; `None` follows the default.
     pub device: Option<OutputDevice>,
+    /// Opened exclusively, on the device's hardware PCM.
+    pub exclusive: bool,
 }
 
 impl std::fmt::Debug for Output {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Output").field("backend", &self.backend).field("device", &self.device).finish()
+        f.debug_struct("Output")
+            .field("backend", &self.backend)
+            .field("device", &self.device)
+            .field("exclusive", &self.exclusive)
+            .finish()
     }
 }
 
@@ -112,10 +135,14 @@ pub fn create(device: Option<&str>) -> AppResult<Output> {
         let Ok(sink) = gst::ElementFactory::make(backend.factory()).name(SINK_NAME).build() else {
             continue;
         };
+        if backend == OutputBackend::PipeWire {
+            // Started before any stream is open: see `provider`.
+            provider(backend);
+        }
         if backend == OutputBackend::Null {
             sink.set_property("sync", true);
         }
-        let mut output = Output { sink, backend, device: None };
+        let mut output = Output { sink, backend, device: None, exclusive: false };
         if let Some(id) = device {
             match open_device(backend, id) {
                 Some((sink, found)) => {
@@ -137,6 +164,99 @@ pub fn create(device: Option<&str>) -> AppResult<Output> {
 }
 
 const SINK_NAME: &str = "matrixplayer-output";
+
+/// Opens `device` exclusively, on its ALSA hardware PCM. The card must
+/// already be borrowed from the sound server, or opening it fails as busy.
+/// Nothing converts behind it: the stream's rate and format go to the
+/// hardware as they are, when it takes them.
+pub fn open_exclusive(device: &OutputDevice) -> AppResult<Output> {
+    let pcm = device.pcm.ok_or_else(|| AppError::Audio(format!("{} cannot be opened exclusively", device.name)))?;
+    let sink = gst::ElementFactory::make("alsasink")
+        .name(SINK_NAME)
+        .property("device", format!("hw:{},{}", pcm.card, pcm.device))
+        .build()
+        .map_err(|_| AppError::Audio("GStreamer's ALSA output is not installed".into()))?;
+    log::info!("audio output: alsasink on hw:{},{} ({}), exclusive", pcm.card, pcm.device, device.name);
+    Ok(Output { sink, backend: OutputBackend::Alsa, device: Some(device.clone()), exclusive: true })
+}
+
+/// The backend shared playback uses (what [`create`] picks first).
+pub fn shared_backend() -> OutputBackend {
+    candidates().into_iter().find(|b| gst::ElementFactory::find(b.factory()).is_some()).unwrap_or(OutputBackend::Auto)
+}
+
+/// An output that renders nothing, in real time: a stand-in while a device
+/// changes hands, so neither the old nor the new one is open.
+pub fn silent() -> Output {
+    let sink = gst::ElementFactory::make("fakesink")
+        .name(SINK_NAME)
+        .property("sync", true)
+        .build()
+        .expect("fakesink is part of GStreamer core");
+    Output { sink, backend: OutputBackend::Null, device: None, exclusive: false }
+}
+
+/// The device with `id` among those of `backend`, if it is still there.
+pub fn find_device(backend: OutputBackend, id: &str) -> Option<OutputDevice> {
+    devices(backend).into_iter().find(|d| d.id == id)
+}
+
+/// PipeWire's clock settings (its `settings` metadata): the rate the graph
+/// runs at when nothing asks for another, the rates it may switch to for a
+/// stream, and a rate forced on everything (0: none).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipeWireClock {
+    pub rate: u32,
+    pub allowed_rates: Vec<u32>,
+    pub force_rate: u32,
+}
+
+impl PipeWireClock {
+    /// The rate the device runs at while a stream at `rate` plays alone.
+    pub fn rate_for(&self, rate: u32) -> u32 {
+        if self.force_rate > 0 {
+            self.force_rate
+        } else if self.allowed_rates.contains(&rate) {
+            rate
+        } else {
+            self.rate
+        }
+    }
+
+    fn parse(metadata: &str) -> Option<Self> {
+        // Lines like: update: id:0 key:'clock.allowed-rates' value:'[ 44100 48000 ]' type:''
+        let value = |key: &str| {
+            let line = metadata.lines().find(|l| l.contains(&format!("key:'{key}'")))?;
+            let start = line.find("value:'")? + "value:'".len();
+            let end = start + line[start..].find('\'')?;
+            Some(line[start..end].to_owned())
+        };
+        let numbers =
+            |v: String| -> Vec<u32> { v.split(|c: char| !c.is_ascii_digit()).filter_map(|n| n.parse().ok()).collect() };
+        let rate = numbers(value("clock.rate")?).first().copied()?;
+        let allowed_rates = value("clock.allowed-rates").map(numbers).filter(|r| !r.is_empty()).unwrap_or(vec![rate]);
+        let force_rate = value("clock.force-rate").and_then(|v| numbers(v).first().copied()).unwrap_or(0);
+        Some(Self { rate, allowed_rates, force_rate })
+    }
+}
+
+static PIPEWIRE_CLOCK: RwLock<Option<PipeWireClock>> = RwLock::new(None);
+
+/// Reads PipeWire's clock settings with `pw-metadata` and keeps them for
+/// [`pipewire_clock`]. Blocking (runs a short process); `None` without
+/// PipeWire or its tools.
+pub fn refresh_pipewire_clock() -> Option<PipeWireClock> {
+    let out = std::process::Command::new("pw-metadata").args(["-n", "settings", "0"]).output().ok()?;
+    let clock = PipeWireClock::parse(&String::from_utf8_lossy(&out.stdout));
+    *PIPEWIRE_CLOCK.write().unwrap() = clock.clone();
+    clock
+}
+
+/// PipeWire's clock settings as last read by [`refresh_pipewire_clock`].
+pub fn pipewire_clock() -> Option<PipeWireClock> {
+    PIPEWIRE_CLOCK.read().unwrap().clone()
+}
 
 /// Lists the output devices of the backend in use. Blocking: providers may
 /// talk to the sound server.
@@ -164,9 +284,11 @@ fn provider_devices(backend: OutputBackend) -> Vec<(OutputDevice, gst::Device)> 
 /// PipeWire's provider cannot be probed again while a stream is open: every
 /// PipeWire element in the process shares one connection, and a second probe
 /// on it waits forever for the server's reply, taking the connection's lock
-/// (and so playback) down with it. Its provider is therefore started once
-/// and kept running; a running provider answers from the devices it
-/// monitors, without probing, and follows hotplug.
+/// (and so playback) down with it. Starting the provider is such a probe,
+/// and hangs the same way while a stream sits paused (a restored session).
+/// Its provider is therefore started once, by [`create`] before the first
+/// stream opens, and kept running; a running provider answers from the
+/// devices it monitors, without probing, and follows hotplug.
 fn provider(backend: OutputBackend) -> Option<gst::DeviceProvider> {
     static PIPEWIRE: Mutex<Option<gst::DeviceProvider>> = Mutex::new(None);
 
@@ -240,7 +362,24 @@ fn describe_device(device: &gst::Device) -> Option<OutputDevice> {
         Some(caps) => format!("{connection} · {caps}"),
         None => connection.to_owned(),
     };
-    Some(OutputDevice { id, name, detail, kind })
+    // PipeWire and PulseAudio say which ALSA card and device they drive
+    // (`alsa.card` = "2", `alsa.device` = "0"); a plain ALSA device's own id
+    // is the PCM name.
+    let number = |keys: &[&str]| keys.iter().find_map(|k| prop(k)).and_then(|v| v.trim().parse::<u32>().ok());
+    let pcm = match (number(&["alsa.card", "api.alsa.pcm.card"]), number(&["alsa.device", "api.alsa.pcm.device"])) {
+        (Some(card), device) => Some(AlsaPcm { card, device: device.unwrap_or(0) }),
+        (None, _) => parse_hw(&id),
+    };
+    Some(OutputDevice { id, name, detail, kind, pcm, exclusive: pcm.is_some() })
+}
+
+/// The card and device of an ALSA PCM name such as `hw:2,0` or `hw:2`.
+fn parse_hw(name: &str) -> Option<AlsaPcm> {
+    let rest = name.strip_prefix("hw:").or_else(|| name.strip_prefix("plughw:"))?;
+    let mut parts = rest.split(',');
+    let card = parts.next()?.trim().parse().ok()?;
+    let device = parts.next().map_or(Some(0), |d| d.trim().parse().ok())?;
+    Some(AlsaPcm { card, device })
 }
 
 /// "up to 32-bit / 384 kHz" from a device's caps, when it states limits.
@@ -295,7 +434,7 @@ impl Output {
     #[cfg(test)]
     pub fn fake(sync: bool) -> Self {
         let sink = gst::ElementFactory::make("fakesink").name(SINK_NAME).property("sync", sync).build().unwrap();
-        Self { sink, backend: OutputBackend::Auto, device: None }
+        Self { sink, backend: OutputBackend::Auto, device: None, exclusive: false }
     }
 
     /// The sink's buffer size, when it is an audio sink that has one.
@@ -341,6 +480,30 @@ mod tests {
         let (sink, found) = open_device(OutputBackend::PipeWire, &first.id).expect("the listed device opens");
         assert_eq!(&found, first);
         assert_eq!(sink.factory().unwrap().name(), "pipewiresink");
+    }
+
+    #[test]
+    fn reads_alsa_pcm_names() {
+        assert_eq!(parse_hw("hw:2,0"), Some(AlsaPcm { card: 2, device: 0 }));
+        assert_eq!(parse_hw("hw:1"), Some(AlsaPcm { card: 1, device: 0 }));
+        assert_eq!(parse_hw("plughw:3,1"), Some(AlsaPcm { card: 3, device: 1 }));
+        assert_eq!(parse_hw("front:1"), None);
+        assert_eq!(parse_hw("hw:x"), None);
+    }
+
+    #[test]
+    fn reads_pipewire_clock_settings() {
+        let metadata = "Found \"settings\" metadata 32\n\
+            update: id:0 key:'log.level' value:'2' type:''\n\
+            update: id:0 key:'clock.rate' value:'48000' type:''\n\
+            update: id:0 key:'clock.allowed-rates' value:'[ 44100 48000 96000 ]' type:''\n\
+            update: id:0 key:'clock.force-rate' value:'0' type:''\n";
+        let clock = PipeWireClock::parse(metadata).unwrap();
+        assert_eq!(clock, PipeWireClock { rate: 48_000, allowed_rates: vec![44_100, 48_000, 96_000], force_rate: 0 });
+        assert_eq!((clock.rate_for(44_100), clock.rate_for(88_200)), (44_100, 48_000));
+        let forced = PipeWireClock { force_rate: 96_000, ..clock };
+        assert_eq!(forced.rate_for(44_100), 96_000);
+        assert_eq!(PipeWireClock::parse("nothing here"), None);
     }
 
     #[test]

@@ -5,6 +5,8 @@
 //! [`PlayerSnapshot`] it fetched at startup and applies [`PlayerEvent`]s as
 //! the service publishes them.
 
+pub mod bit_perfect;
+pub mod output_mode;
 mod queue;
 mod service;
 
@@ -172,6 +174,9 @@ pub struct VolumeState {
     pub muted: bool,
     /// Applied gain in dB; `None` means silence.
     pub gain_db: Option<f64>,
+    /// Bit-perfect playback fixes the volume at 100%: it is set on the
+    /// device instead (the slider keeps its position for afterwards).
+    pub locked: bool,
 }
 
 /// What the signal path currently looks like, from decoder to device.
@@ -185,6 +190,15 @@ pub struct SignalPath {
     pub buffer_ms: Option<u32>,
     pub decoded: Option<StreamFormat>,
     pub output: Option<StreamFormat>,
+    /// The device's hardware is held exclusively.
+    pub exclusive: bool,
+    /// Bit-perfect playback is on (always, while exclusive).
+    pub bit_perfect: bool,
+    /// Whether the samples reach the device unchanged right now.
+    pub verdict: bit_perfect::BitPerfect,
+    /// PipeWire's clock settings, when known (they decide whether it
+    /// resamples a shared bit-perfect stream).
+    pub pipewire_clock: Option<crate::audio::output::PipeWireClock>,
 }
 
 #[derive(Debug, Clone, Serialize)]
