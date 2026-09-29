@@ -117,30 +117,48 @@ pub struct OutputDevices {
     pub devices: Vec<OutputDevice>,
     /// The chosen device id; `None` follows the system default.
     pub selected: Option<String>,
+    /// Bit-perfect playback through the sound server is on.
+    pub bit_perfect: bool,
+    /// The selected device's hardware is held exclusively.
+    pub exclusive: bool,
 }
 
 #[tauri::command]
 pub async fn audio_output_devices(state: State<'_, AppState>) -> AppResult<OutputDevices> {
-    let backend = state.player.snapshot().await?.signal.backend;
-    let devices = tauri::async_runtime::spawn_blocking(move || output::devices(backend))
-        .await
-        .map_err(|e| AppError::Audio(e.to_string()))?;
+    // Devices are those of the sound server, also while one of them is held
+    // exclusively (and so played through ALSA directly).
+    let (backend, devices) = tauri::async_runtime::spawn_blocking(|| {
+        output::refresh_pipewire_clock();
+        let backend = output::shared_backend();
+        (backend, output::devices(backend))
+    })
+    .await
+    .map_err(|e| AppError::Audio(e.to_string()))?;
     let selected = settings::get::<Option<String>>(&state.db, OUTPUT_DEVICE_KEY).await?.flatten();
-    Ok(OutputDevices { backend, devices, selected })
+    let mode = &state.output_mode;
+    Ok(OutputDevices { backend, devices, selected, bit_perfect: mode.bit_perfect(), exclusive: mode.exclusive().await })
 }
 
-/// Plays through `id`, or through the system default with `None`.
+/// Plays through `id`, or through the system default with `None`. While a
+/// device is held exclusively, exclusive access moves to the new one if it
+/// can have it.
 #[tauri::command]
 pub async fn player_set_output_device(state: State<'_, AppState>, id: Option<String>) -> AppResult<()> {
-    let wanted = id.clone();
-    let out = tauri::async_runtime::spawn_blocking(move || output::create(wanted.as_deref()))
-        .await
-        .map_err(|e| AppError::Audio(e.to_string()))??;
-    if id.is_some() && out.device.is_none() {
-        return Err(AppError::Audio("That output device is no longer available".into()));
-    }
-    state.player.command(PlayerCommand::SetOutput(Box::new(out))).await?;
-    settings::set(&state.db, OUTPUT_DEVICE_KEY, &id).await
+    state.output_mode.select_device(id).await
+}
+
+/// Bit-perfect playback through the sound server: nothing processes, the
+/// volume is fixed at 100%.
+#[tauri::command]
+pub async fn player_set_bit_perfect(state: State<'_, AppState>, enabled: bool) -> AppResult<()> {
+    state.output_mode.set_bit_perfect(enabled).await
+}
+
+/// Exclusive access to the selected device: its card is borrowed from the
+/// sound server and played to directly, bit-perfect.
+#[tauri::command]
+pub async fn player_set_exclusive(state: State<'_, AppState>, enabled: bool) -> AppResult<()> {
+    state.output_mode.set_exclusive(enabled).await
 }
 
 #[tauri::command]

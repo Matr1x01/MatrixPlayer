@@ -38,6 +38,7 @@ pub mod processor;
 pub mod service;
 pub mod settings;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gstreamer as gst;
@@ -60,8 +61,15 @@ pub struct DspChain {
     to_output: gst::Element,
     sink: Mutex<Option<gst::Element>>,
     control: Arc<DspControl>,
-    /// Volume (linear) and mute as last set; the processor hears 0 when muted.
-    volume: Mutex<(f64, bool)>,
+}
+
+/// The float stage's caps: mono is upmixed to stereo so the stereo controls
+/// apply, except in bit-perfect playback, where every layout passes as is.
+fn float_caps(upmix_mono: bool) -> gst::Caps {
+    gst_audio::AudioCapsBuilder::new_interleaved()
+        .format(gst_audio::AudioFormat::F64le)
+        .channels_range(if upmix_mono { 2 } else { 1 }..=64)
+        .build()
 }
 
 impl DspChain {
@@ -69,16 +77,8 @@ impl DspChain {
         let bin = gst::Bin::builder().name("matrixplayer-dsp").build();
 
         let to_float = gst::ElementFactory::make("audioconvert").name("dsp-in").build()?;
-        let float_caps = gst::ElementFactory::make("capsfilter")
-            .name("dsp-f64")
-            .property(
-                "caps",
-                gst_audio::AudioCapsBuilder::new_interleaved()
-                    .format(gst_audio::AudioFormat::F64le)
-                    .channels_range(2..=64)
-                    .build(),
-            )
-            .build()?;
+        let float_caps =
+            gst::ElementFactory::make("capsfilter").name("dsp-f64").property("caps", float_caps(true)).build()?;
         // Volume is applied by the processor, smoothed; a `volume` element
         // would step the gain at buffer boundaries.
         let resample =
@@ -108,12 +108,15 @@ impl DspChain {
         let control = Arc::new(DspControl {
             shared,
             to_output: to_output.clone(),
+            float_caps: float_caps.clone(),
             analysis,
             status,
             settings: Mutex::default(),
+            bypass: AtomicBool::new(false),
+            volume: Mutex::new((1.0, false)),
             response_solver: Mutex::default(),
         });
-        Ok(Self { bin, to_output, sink: Mutex::new(None), control, volume: Mutex::new((1.0, false)) })
+        Ok(Self { bin, to_output, sink: Mutex::new(None), control })
     }
 
     /// Makes `sink` the chain's output, replacing (and closing) the previous
@@ -147,15 +150,13 @@ impl DspChain {
 
     /// Sets the playback gain as a linear amplitude factor (1.0 = unity).
     pub fn set_volume(&self, linear: f64) {
-        let mut volume = self.volume.lock().unwrap();
-        volume.0 = linear.clamp(0.0, 1.0);
-        self.control.shared.set_volume(if volume.1 { 0.0 } else { volume.0 });
+        self.control.volume.lock().unwrap().0 = linear.clamp(0.0, 1.0);
+        self.control.push_volume();
     }
 
     pub fn set_muted(&self, muted: bool) {
-        let mut volume = self.volume.lock().unwrap();
-        volume.1 = muted;
-        self.control.shared.set_volume(if muted { 0.0 } else { volume.0 });
+        self.control.volume.lock().unwrap().1 = muted;
+        self.control.push_volume();
     }
 
     /// The pipeline was stopped or reset: the next stream starts from rest.
@@ -213,9 +214,15 @@ fn install_processor(pad: &gst::Pad, shared: Arc<Shared>) {
 pub struct DspControl {
     shared: Arc<Shared>,
     to_output: gst::Element,
+    float_caps: gst::Element,
     analysis: broadcast::Sender<AnalysisFrame>,
     status: broadcast::Sender<DspStatus>,
     settings: Mutex<DspSettings>,
+    /// Bit-perfect playback: the settings are kept, but nothing processes.
+    bypass: AtomicBool,
+    /// Volume (linear) and mute as last set; the processor hears 0 when
+    /// muted, and unity in bit-perfect playback.
+    volume: Mutex<(f64, bool)>,
     /// The graphic EQ solver for drawing responses (the processor has its own).
     response_solver: Mutex<GraphicCache>,
 }
@@ -223,6 +230,42 @@ pub struct DspControl {
 impl DspControl {
     /// Applies validated settings to the running chain.
     pub fn apply(&self, settings: &DspSettings) {
+        *self.settings.lock().unwrap() = settings.clone();
+        self.push_settings();
+    }
+
+    /// Bit-perfect playback: every stage that changes samples is bypassed
+    /// (the settings stay as they are, for when it ends), the volume is
+    /// fixed at unity and mono is no longer upmixed. Only soft fades remain,
+    /// which touch nothing but the moment of a pause or a seek. Integer
+    /// samples survive the 64-bit float stage exactly, so what reaches the
+    /// output is the decoded stream, one limiter look-ahead later. The new
+    /// channel layout applies once the stream is reopened.
+    pub fn set_bypass(&self, bypass: bool) {
+        if self.bypass.swap(bypass, Ordering::SeqCst) != bypass {
+            self.float_caps.set_property("caps", float_caps(!bypass));
+            self.push_settings();
+            self.push_volume();
+        }
+    }
+
+    pub fn bypassed(&self) -> bool {
+        self.bypass.load(Ordering::SeqCst)
+    }
+
+    fn push_volume(&self) {
+        let (level, muted) = *self.volume.lock().unwrap();
+        let unity = if self.bypassed() { 1.0 } else { level };
+        self.shared.set_volume(if muted { 0.0 } else { unity });
+    }
+
+    fn push_settings(&self) {
+        let settings = self.settings.lock().unwrap().clone();
+        if self.bypassed() {
+            self.shared.set_params(Params { soft_fades: settings.soft_fades, ..Params::default() });
+            self.to_output.set_property_from_str("dithering", "none");
+            return;
+        }
         let active = settings.eq_active();
         self.shared.set_params(Params {
             eq: active.then(|| EqSpec { slot: settings.slot, curve: settings.curve().clone() }),
@@ -238,7 +281,6 @@ impl DspControl {
             soft_fades: settings.soft_fades,
         });
         self.to_output.set_property_from_str("dithering", if settings.dither { "tpdf" } else { "none" });
-        *self.settings.lock().unwrap() = settings.clone();
     }
 
     pub fn settings(&self) -> DspSettings {

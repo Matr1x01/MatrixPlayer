@@ -56,6 +56,7 @@ pub struct AudioEngine {
     sink: gst::Element,
     backend: output::OutputBackend,
     device: Option<output::OutputDevice>,
+    exclusive: bool,
     events: UnboundedSender<EngineMessage>,
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
@@ -85,7 +86,17 @@ impl AudioEngine {
             spawn_analyzer(&playbin, &shared, dsp.control())?,
         ];
 
-        Ok(Self { playbin, dsp, sink: out.sink, backend: out.backend, device: out.device, events, shared, threads })
+        Ok(Self {
+            playbin,
+            dsp,
+            sink: out.sink,
+            backend: out.backend,
+            device: out.device,
+            exclusive: out.exclusive,
+            events,
+            shared,
+            threads,
+        })
     }
 
     pub fn backend(&self) -> output::OutputBackend {
@@ -95,6 +106,11 @@ impl AudioEngine {
     /// The device chosen for the output, `None` when following the default.
     pub fn device(&self) -> Option<&output::OutputDevice> {
         self.device.as_ref()
+    }
+
+    /// Whether the output is the device's hardware, opened exclusively.
+    pub fn exclusive(&self) -> bool {
+        self.exclusive
     }
 
     /// The output's buffer size, for the signal path readout.
@@ -114,6 +130,7 @@ impl AudioEngine {
         self.sink = out.sink;
         self.backend = out.backend;
         self.device = out.device;
+        self.exclusive = out.exclusive;
         Ok(())
     }
 
@@ -709,7 +726,8 @@ mod tests {
             None
         });
         let (tx, mut rx) = unbounded_channel();
-        let out = output::Output { sink: bin.upcast(), backend: output::OutputBackend::Auto, device: None };
+        let out =
+            output::Output { sink: bin.upcast(), backend: output::OutputBackend::Auto, device: None, exclusive: false };
         let engine = AudioEngine::new(tx, out).unwrap();
         engine.dsp().apply(settings);
         engine.set_volume(1.0);
@@ -782,6 +800,86 @@ mod tests {
         let [left, right] = played.peaks[..] else { panic!("stereo out: {:?}", played.peaks) };
         assert_eq!(left, 0.0, "balance full right silences the left");
         assert!((20.0 * right.log10() - 20.0 * 0.2f64.log10()).abs() < 0.2, "unity upmix: {right}");
+    }
+
+    /// Bit-perfect playback: whatever the saved settings and the volume,
+    /// every decoded sample reaches the output unchanged (one limiter
+    /// look-ahead later), at its own rate, depth and channel count.
+    #[test]
+    fn bit_perfect_playback_delivers_the_decoded_samples_unchanged() {
+        use crate::dsp::settings::{DspSettings, EqMode, ReplayGainMode};
+        use crate::test_support::{decode_s32, write_flac_noise};
+
+        gst::init().unwrap();
+        // Everything that would change a sample, switched on.
+        let mut settings = DspSettings {
+            eq_enabled: true,
+            preamp_db: 3.0,
+            balance: 0.3,
+            width: 1.5,
+            crossfeed: true,
+            replay_gain: ReplayGainMode::Track,
+            replay_gain_fallback_db: -6.0,
+            dither: true,
+            ..DspSettings::default()
+        };
+        settings.a.mode = EqMode::Graphic10;
+        settings.a.graphic10 = vec![6.0, -3.0, 2.0, 0.0, 4.0, -5.0, 1.0, 3.0, -2.0, 6.0];
+        let dir = tempfile::tempdir().unwrap();
+        for (bits, rate, channels) in [(16, 44_100, 2), (24, 96_000, 2), (24, 44_100, 1)] {
+            let path = dir.path().join(format!("noise-{bits}-{rate}-{channels}.flac"));
+            write_flac_noise(&path, 0.5, rate, channels, bits);
+            let reference = decode_s32(&path);
+
+            // A "DAC" that takes 32-bit integers at any rate and layout.
+            let bin = gst::parse::bin_from_description(
+                "capsfilter caps=audio/x-raw,format=S32LE ! fakesink name=out sync=false signal-handoffs=true",
+                true,
+            )
+            .unwrap();
+            let heard = Arc::new(Mutex::new(Vec::<i32>::new()));
+            let log = heard.clone();
+            bin.by_name("out").unwrap().connect("handoff", false, move |args| {
+                let buffer = args[1].get::<gst::Buffer>().ok()?;
+                let map = buffer.map_readable().ok()?;
+                log.lock()
+                    .unwrap()
+                    .extend(map.as_slice().chunks_exact(4).map(|b| i32::from_le_bytes(b.try_into().unwrap())));
+                None
+            });
+            let (tx, mut rx) = unbounded_channel();
+            let out = output::Output {
+                sink: bin.upcast(),
+                backend: output::OutputBackend::Alsa,
+                device: None,
+                exclusive: true,
+            };
+            let engine = AudioEngine::new(tx, out).unwrap();
+            engine.dsp().apply(&settings);
+            engine.dsp().set_bypass(true);
+            engine.set_volume(0.3);
+            engine.load(&path_to_uri(&path).unwrap(), None, true).unwrap();
+            let events = collect_until(&mut rx, |e| matches!(e, EngineEvent::EndOfStream | EngineEvent::Error(_)));
+
+            let decoded = decoded(&events).unwrap_or_else(|| panic!("{events:#?}"));
+            let output = output_format(&events).unwrap();
+            assert_eq!((decoded.bits, decoded.sample_rate, decoded.channels), (bits, rate, channels));
+            assert_eq!(
+                (output.bits, output.sample_rate, output.channels),
+                (32, rate, channels),
+                "nothing resampled or remixed"
+            );
+
+            let heard = heard.lock().unwrap();
+            let ch = channels as usize;
+            assert_eq!(heard.len(), reference.len(), "{bits}-bit {rate} Hz: as many samples as decoded");
+            // The look-ahead: silence first, then the stream, sample for sample.
+            let lag =
+                (0..=400).map(|d| d * ch).find(|&d| heard[d..d + 256] == reference[..256]).expect("the stream appears");
+            assert!(heard[..lag].iter().all(|s| *s == 0), "only silence before it");
+            let wrong = heard[lag..].iter().zip(&reference).filter(|(a, b)| a != b).count();
+            assert_eq!(wrong, 0, "{bits}-bit {rate} Hz, {channels} ch: {wrong} samples changed");
+        }
     }
 
     /// Settings (EQ, fades) are heard only once processed audio reaches the

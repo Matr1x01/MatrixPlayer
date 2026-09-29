@@ -34,6 +34,7 @@ use crate::audio::waveform::WaveformCache;
 use crate::database::Database;
 use crate::dsp::service::DspService;
 use crate::library::LibraryHandle;
+use crate::player::output_mode::OutputMode;
 use crate::player::{InsertMode, PlayerHandle, PlayerSettings};
 use crate::state::AppState;
 
@@ -153,6 +154,8 @@ pub fn run() {
             commands::dsp::dsp_eq_response,
             commands::dsp::audio_output_devices,
             commands::dsp::player_set_output_device,
+            commands::dsp::player_set_bit_perfect,
+            commands::dsp::player_set_exclusive,
             commands::dsp::player_set_gapless,
             commands::system::get_app_info,
             commands::system::get_ui_preferences,
@@ -186,6 +189,7 @@ fn setup(app: &AppHandle) -> Result<(), error::AppError> {
     let (player, service) = PlayerHandle::new(db.clone(), settings, output)?;
     let dsp = tauri::async_runtime::block_on(DspService::start(db.clone(), player.dsp()));
     tauri::async_runtime::spawn(service);
+    let output_mode = tauri::async_runtime::block_on(OutputMode::start(player.clone(), db.clone()));
     events::forward_player_events(app.clone(), player.subscribe());
     events::forward_dsp_events(app.clone(), dsp.control());
 
@@ -198,7 +202,7 @@ fn setup(app: &AppHandle) -> Result<(), error::AppError> {
     let waveforms = Arc::new(WaveformCache::new(cache_dir.join("waveforms"))?);
     desktop::mpris::spawn(app.clone(), player.clone(), artwork.clone());
     desktop::notifications::spawn(app.clone(), player.clone(), artwork.clone(), db.clone());
-    app.manage(AppState { player, library, artwork, dsp, waveforms, db });
+    app.manage(AppState { player, library, artwork, dsp, waveforms, db, output_mode });
 
     // Files on the command line play; transport flags only matter to an
     // instance that is already running. Otherwise the last session comes
