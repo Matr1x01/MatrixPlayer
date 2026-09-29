@@ -135,6 +135,10 @@ pub fn create(device: Option<&str>) -> AppResult<Output> {
         let Ok(sink) = gst::ElementFactory::make(backend.factory()).name(SINK_NAME).build() else {
             continue;
         };
+        if backend == OutputBackend::PipeWire {
+            // Started before any stream is open: see `provider`.
+            provider(backend);
+        }
         if backend == OutputBackend::Null {
             sink.set_property("sync", true);
         }
@@ -280,9 +284,11 @@ fn provider_devices(backend: OutputBackend) -> Vec<(OutputDevice, gst::Device)> 
 /// PipeWire's provider cannot be probed again while a stream is open: every
 /// PipeWire element in the process shares one connection, and a second probe
 /// on it waits forever for the server's reply, taking the connection's lock
-/// (and so playback) down with it. Its provider is therefore started once
-/// and kept running; a running provider answers from the devices it
-/// monitors, without probing, and follows hotplug.
+/// (and so playback) down with it. Starting the provider is such a probe,
+/// and hangs the same way while a stream sits paused (a restored session).
+/// Its provider is therefore started once, by [`create`] before the first
+/// stream opens, and kept running; a running provider answers from the
+/// devices it monitors, without probing, and follows hotplug.
 fn provider(backend: OutputBackend) -> Option<gst::DeviceProvider> {
     static PIPEWIRE: Mutex<Option<gst::DeviceProvider>> = Mutex::new(None);
 

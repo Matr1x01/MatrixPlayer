@@ -1003,4 +1003,27 @@ mod system_output_tests {
             assert!(engine.position().is_some_and(|p| p > Duration::ZERO), "{} plays", device.name);
         }
     }
+
+    /// Opt in as above, running this test on its own (the device monitor is
+    /// shared by the whole process).
+    #[test]
+    #[ignore = "needs a running PipeWire daemon"]
+    fn lists_pipewire_devices_while_a_restored_session_sits_paused() {
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.flac");
+        write_flac(&a, 2.0, "A");
+
+        let (tx, _rx) = unbounded_channel();
+        let engine = AudioEngine::new(tx, output::create(None).unwrap()).unwrap();
+        engine.set_muted(true);
+        engine.load(&path_to_uri(&a).unwrap(), None, false).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        // The first listing used to wait forever while the stream was paused.
+        let (done, listed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(output::devices(output::OutputBackend::PipeWire)));
+        let devices = listed.recv_timeout(Duration::from_secs(5)).expect("listing devices hung");
+        assert!(!devices.is_empty());
+    }
 }
