@@ -473,6 +473,7 @@ mod tests {
     #[test]
     #[ignore = "needs a running PipeWire daemon"]
     fn lists_and_opens_pipewire_devices() {
+        let _serial = crate::test_support::system_output();
         gst::init().unwrap();
         let devices = devices(OutputBackend::PipeWire);
         eprintln!("{devices:#?}");

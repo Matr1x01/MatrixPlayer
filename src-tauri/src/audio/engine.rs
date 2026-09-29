@@ -934,11 +934,12 @@ mod system_output_tests {
 
     use super::*;
     use crate::filesystem::path_to_uri;
-    use crate::test_support::write_flac;
+    use crate::test_support::{system_output, write_flac};
 
     #[test]
     #[ignore = "needs a running sound server; plays silence"]
     fn plays_gaplessly_through_the_system_output() {
+        let _serial = system_output();
         gst::init().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = (dir.path().join("a.flac"), dir.path().join("b.flac"));
@@ -977,6 +978,7 @@ mod system_output_tests {
     #[test]
     #[ignore = "needs a running PipeWire daemon"]
     fn lists_and_switches_pipewire_devices_while_playing() {
+        let _serial = system_output();
         gst::init().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.flac");
@@ -1004,11 +1006,12 @@ mod system_output_tests {
         }
     }
 
-    /// Opt in as above, running this test on its own (the device monitor is
-    /// shared by the whole process).
+    /// Opt in as above. It proves most run on its own (`--exact`), before
+    /// another test has started the process's one device monitor.
     #[test]
     #[ignore = "needs a running PipeWire daemon"]
     fn lists_pipewire_devices_while_a_restored_session_sits_paused() {
+        let _serial = system_output();
         gst::init().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.flac");
@@ -1023,7 +1026,13 @@ mod system_output_tests {
         // The first listing used to wait forever while the stream was paused.
         let (done, listed) = std::sync::mpsc::channel();
         std::thread::spawn(move || done.send(output::devices(output::OutputBackend::PipeWire)));
-        let devices = listed.recv_timeout(Duration::from_secs(5)).expect("listing devices hung");
+        let listed = listed.recv_timeout(Duration::from_secs(5));
+        // pipewiresink cannot stop a stream that prerolled and never played
+        // (it deadlocks with its own connection), so play before stopping,
+        // even when the listing failed. Muted: nothing is heard.
+        engine.play().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let devices = listed.expect("listing devices hung");
         assert!(!devices.is_empty());
     }
 }

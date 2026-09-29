@@ -1,10 +1,20 @@
 //! Fixtures for tests that need real audio files.
 
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
+
+/// Taken by the tests that use the real sound server, so they run one at a
+/// time: all PipeWire elements in a process share one connection, and one
+/// test's stuck stream would stall the others' (and, through the session
+/// manager, every other program's sound).
+pub fn system_output() -> MutexGuard<'static, ()> {
+    static SYSTEM_OUTPUT: Mutex<()> = Mutex::new(());
+    SYSTEM_OUTPUT.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Encodes `seconds` of a sine tone as a tagged 16-bit/44.1 kHz stereo FLAC.
 pub fn write_flac(path: &Path, seconds: f64, title: &str) {
