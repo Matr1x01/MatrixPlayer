@@ -119,7 +119,20 @@ pub fn notch(w0: f64, q: f64) -> Option<Coeffs> {
 
 /// Whether a shelf's Q is the Butterworth one the shelving design is for.
 pub fn is_butterworth(q: f64) -> bool {
-    (q - FRAC_1_SQRT_2).abs() <= 0.01
+    shelf_design(q) == 0
+}
+
+/// Which design a shelf with this Q gets: 0 the matched Butterworth one,
+/// −1 and 1 the cookbook's below and above it. The two differ near Nyquist,
+/// so the EQ crossfades rather than glides a shelf's Q from one to another.
+pub fn shelf_design(q: f64) -> i8 {
+    if (q - FRAC_1_SQRT_2).abs() <= 0.01 {
+        0
+    } else if q < FRAC_1_SQRT_2 {
+        -1
+    } else {
+        1
+    }
 }
 
 /// Butterworth shelf with linear gain `gain` above (`high`) or below the

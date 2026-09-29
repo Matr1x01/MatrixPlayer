@@ -138,15 +138,20 @@ impl State {
     }
 }
 
-/// The largest boost the filters `coeffs` apply anywhere in the audible
-/// range, sampled on a log grid (what "auto preamp" compensates).
-pub fn max_boost_db(coeffs: &[Coeffs], fs: f64) -> f64 {
+/// The largest boost the filters `coeffs` add anywhere from 20 Hz up to
+/// Nyquist (what "auto preamp" compensates), sampled on a log grid and at
+/// `centres`, the bands' own frequencies (a peak is at its highest there,
+/// however narrow).
+pub fn max_boost_db(coeffs: &[Coeffs], centres: &[f64], fs: f64) -> f64 {
     if coeffs.is_empty() {
         return 0.0;
     }
-    (0..=240)
+    let top = 0.499 * fs;
+    (0u32..)
         .map(|i| 20.0 * 1000f64.powf(f64::from(i) / 240.0))
-        .filter(|f| *f < fs / 2.0)
+        .take_while(|f| *f < top)
+        .chain([top])
+        .chain(centres.iter().map(|f| f.min(top)))
         .map(|f| coeffs.iter().map(|c| c.magnitude_db(f, fs)).sum::<f64>())
         .fold(f64::MIN, f64::max)
         .max(0.0)
@@ -199,9 +204,14 @@ mod tests {
     fn max_boost_finds_the_peak_of_the_combined_curve() {
         let coeffs = |bands: &[EqBand]| bands.iter().map(|b| Coeffs::for_band(b, FS)).collect::<Vec<_>>();
         let bands = [EqBand::peak(1000.0, 3.0, 1.0), EqBand::peak(1100.0, 2.0, 1.0), EqBand::peak(100.0, -8.0, 1.0)];
-        let boost = max_boost_db(&coeffs(&bands), FS);
+        let boost = max_boost_db(&coeffs(&bands), &[], FS);
         assert!((4.8..5.0).contains(&boost), "{boost}");
-        assert_eq!(max_boost_db(&coeffs(&[EqBand::peak(500.0, -3.0, 1.0)]), FS), 0.0);
+        assert_eq!(max_boost_db(&coeffs(&[EqBand::peak(500.0, -3.0, 1.0)]), &[], FS), 0.0);
+        // A peak above 20 kHz, or too narrow for the grid, is still found.
+        let high = [Coeffs::for_band(&EqBand::peak(21_500.0, 12.0, 2.0), 44_100.0)];
+        assert!((max_boost_db(&high, &[21_500.0], 44_100.0) - 12.0).abs() < 0.01);
+        let narrow = [EqBand::peak(1_234.0, 9.0, 20.0)];
+        assert!((max_boost_db(&coeffs(&narrow), &[1_234.0], FS) - 9.0).abs() < 1e-6);
     }
 
     #[test]

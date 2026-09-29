@@ -8,7 +8,9 @@
 //! Stages that are neutral are skipped outright, so with everything off and
 //! the volume at 100% the samples pass through untouched, full-scale peaks
 //! included; they only come out 1.5 ms later, the limiter's constant
-//! look-ahead. ReplayGain values come from the tag events
+//! look-ahead. (A probe cannot add samples of its own, so the last
+//! look-ahead of a stream never leaves the delay line: at the end of the
+//! queue, or at a gapless join to another sample rate, 1.5 ms is lost.) ReplayGain values come from the tag events
 //! that travel with the audio, so at a gapless join the new track's gain
 //! starts on exactly its first sample.
 
@@ -245,7 +247,7 @@ impl Processor {
             volume_now: 1.0,
             volume_coeff: 1.0,
             fresh: true,
-            crossfeed: Crossfeed::new(CrossfeedPreset::Default, 48_000.0),
+            crossfeed: Crossfeed::new(None, 48_000.0),
             segment: None,
             status: DspStatus::default(),
         };
@@ -265,7 +267,7 @@ impl Processor {
         self.channels = channels_n;
         self.limiter.set_format(self.rate, self.channels);
         self.volume_coeff = 1.0 - (-1.0 / (VOLUME_SMOOTH_S * self.rate)).exp();
-        self.tune_crossfeed();
+        self.crossfeed.set_format(self.rate);
         self.status.sample_rate = rate;
         self.status.channels = channels;
         self.eq.set_format(self.rate, self.channels);
@@ -336,8 +338,9 @@ impl Processor {
         if frames == 0 {
             return;
         }
-        // A gain ramping down from a boost can still push this buffer over.
-        let limiter_on = self.limiter_needed || self.gain_now > 1.0;
+        // A gain ramping down from a boost can still push this buffer over,
+        // and so can the crossfeed while it glides out.
+        let limiter_on = self.limiter_needed || self.gain_now > 1.0 || (ch == 2 && self.crossfeed.running());
 
         // Static gain, ramped towards its target.
         let ramp_step = 1.0 / (GAIN_RAMP_S * self.rate);
@@ -421,7 +424,7 @@ impl Processor {
                 frame[1] = mid - side;
             }
         }
-        if p.crossfeed.is_some() {
+        if self.crossfeed.running() {
             self.crossfeed.run(samples);
         }
     }
@@ -469,12 +472,6 @@ impl Processor {
         self.crossfeed.flush_denormals();
     }
 
-    /// Crossfeed coefficients for the preset and rate, keeping its memory.
-    fn tune_crossfeed(&mut self) {
-        let preset = self.params.crossfeed.unwrap_or_default();
-        self.crossfeed.retune(Crossfeed::new(preset, self.rate));
-    }
-
     fn sync_params(&mut self) {
         let version = self.shared.version.load(Ordering::SeqCst);
         if version == self.seen {
@@ -489,7 +486,7 @@ impl Processor {
             self.update_eq();
         }
         if crossfeed_changed {
-            self.tune_crossfeed();
+            self.crossfeed.set(self.params.crossfeed);
         }
         self.update_gain();
     }
@@ -540,12 +537,15 @@ impl Processor {
         let mut rg_linear = db_to_linear(gain_db);
         // Boosted tracks land at the limiter's ceiling, so it never has to
         // touch a track whose peak tag is right. (Tags hold sample peaks;
-        // what the true peak adds on top, the limiter takes.)
+        // what the true peak adds on top, the limiter takes.) A track that is
+        // only turned down is capped at full scale, as it always was: it
+        // should not lose level to a limiter that has nothing to do.
+        let ceiling = if rg_linear > 1.0 { CEILING } else { 1.0 };
         if p.clipping_prevention
             && let Some(peak) = peak.filter(|p| *p > 0.0)
-            && peak * rg_linear > CEILING
+            && peak * rg_linear > ceiling
         {
-            rg_linear = CEILING / peak;
+            rg_linear = ceiling / peak;
         }
         // Auto preamp takes back only the boost beyond the allowance, and
         // the same for every track, so ReplayGain's levels stay matched.
@@ -554,8 +554,11 @@ impl Processor {
         self.gain_target = rg_linear * db_to_linear(p.preamp_db - auto_db);
         // The EQ counts even when it only cuts: shifting phases can raise
         // peaks, and so can the crossfeed, adding up opposite edges of the
-        // two channels. Balance, fades and a narrower image only lower them.
-        self.limiter_needed = self.gain_target > 1.0 || self.eq.engaged() || p.width > 1.0 || p.crossfeed.is_some();
+        // two channels (see `process`). Balance, fades and a narrower image
+        // only lower them; width and crossfeed only touch stereo.
+        let stereo = self.channels == 2;
+        self.limiter_needed =
+            self.gain_target > 1.0 || self.eq.engaged() || (stereo && (p.width > 1.0 || p.crossfeed.is_some()));
         self.status.replay_gain_source = source;
         self.status.replay_gain_db = linear_to_db(rg_linear);
     }
@@ -586,7 +589,7 @@ pub fn linear_to_db(linear: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::dsp::biquad::State;
-    use crate::dsp::settings::EqBand;
+    use crate::dsp::settings::{EqBand, FilterKind};
 
     /// A parametric curve of `bands` (tone controls flat).
     fn curve(bands: Vec<EqBand>) -> Option<EqSpec> {
@@ -768,6 +771,17 @@ mod tests {
 
         p.stream_start();
         assert_eq!(p.status.replay_gain_source, RgSource::Untagged, "a new track forgets the old tags");
+
+        // Turned down to just under full scale: kept, not pulled to the
+        // limiter's ceiling.
+        let mut quiet = gst::TagList::new();
+        {
+            let tags = quiet.get_mut().unwrap();
+            tags.add::<gst::tags::AlbumGain>(&-0.3, gst::TagMergeMode::Append);
+            tags.add::<gst::tags::AlbumPeak>(&1.0, gst::TagMergeMode::Append);
+        }
+        p.tags(&quiet);
+        assert!((p.status.replay_gain_db + 0.3).abs() < 1e-9, "{}", p.status.replay_gain_db);
     }
 
     #[test]
@@ -1107,6 +1121,63 @@ mod tests {
         p.flush();
         assert!((p.gain_target - db_to_linear(-p.eq.max_boost_db())).abs() < 1e-6, "auto preamp not refreshed");
         assert!(p.limiter_needed);
+    }
+
+    /// Once nothing raises peaks any more, the limiter only lets go: a hot
+    /// master (true peaks over the ceiling) is bit-exact again soon after the
+    /// EQ that made it limit is bypassed, rather than limited for good.
+    #[test]
+    fn bypassing_the_eq_lets_a_hot_master_through_untouched() {
+        let shared = Arc::new(Shared::new());
+        shared.set_params(Params { eq: curve(vec![EqBand::peak(440.0, 4.0, 1.0)]), ..Params::default() });
+        let mut p = processor_on(&shared, 2);
+        p.process(&mut sine(48_000, 0.99), None);
+        assert!(p.status.limiting);
+        shared.set_params(Params::default());
+        // Buffers as GStreamer hands them over: whether to look for peaks
+        // is decided per buffer.
+        for block in sine(96_000, 0.99).chunks(2 * 1024) {
+            p.process(&mut block.to_vec(), None);
+        }
+        let input = sine(9_600, 0.99);
+        assert_eq!(run(&mut p, &input), input);
+        assert!(!p.status.limiting);
+    }
+
+    /// Width and crossfeed only touch stereo: on a mono stream they must not
+    /// bring the limiter in.
+    #[test]
+    fn stereo_only_stages_leave_other_layouts_untouched() {
+        let shared = Arc::new(Shared::new());
+        shared.set_params(Params { crossfeed: Some(CrossfeedPreset::Default), width: 2.0, ..Params::default() });
+        let mut p = processor_on(&shared, 1);
+        let input: Vec<f64> = sine(9_600, 1.0).into_iter().step_by(2).collect();
+        assert_eq!(run(&mut p, &input), input);
+        assert!(!p.limiter_needed && !p.status.limiting);
+    }
+
+    fn processor_on(shared: &Arc<Shared>, channels: u32) -> Processor {
+        let mut p = Processor::new(shared.clone());
+        p.set_format(48_000, channels);
+        p
+    }
+
+    /// A shelf's Q dragged out of the Butterworth range changes its design;
+    /// that crossfades instead of stepping on a glide.
+    #[test]
+    fn a_shelf_changing_design_crossfades() {
+        let shelf = |q| Params {
+            eq: curve(vec![EqBand { enabled: true, kind: FilterKind::HighShelf, freq: 12_000.0, gain_db: 12.0, q }]),
+            ..Params::default()
+        };
+        switches_without_a_click(shelf(0.70), shelf(0.9));
+        let shared = Arc::new(Shared::new());
+        shared.set_params(shelf(0.70));
+        let mut p = Processor::new(shared.clone());
+        p.process(&mut sine(4_800, 0.1), None);
+        shared.set_params(shelf(0.9));
+        p.process(&mut [], None);
+        assert!(p.eq.crossfading());
     }
 
     #[test]

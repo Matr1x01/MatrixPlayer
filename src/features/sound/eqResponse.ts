@@ -13,23 +13,45 @@ export const DRAW_FREQS = Array.from({ length: 241 }, (_, i) => 20 * Math.pow(10
 /** Rate assumed while nothing is playing. */
 const DEFAULT_RATE = 48_000;
 
+/** A response, and the curve and rate (as a key) it was computed for. */
+interface Drawn {
+  key: string;
+  response: EqResponse;
+}
+
+/** The last response computed, kept across mounts so the graph opens drawn. */
+let last: Drawn | null = null;
+
 /**
- * The response of `curve` at `rate` (0: nothing playing), refetched as the
- * curve changes. The last one stays on screen until a newer one arrives, and
- * answers to superseded requests are dropped, so dragging never flickers.
+ * The response of `curve` at `rate` (0: nothing playing), refetched when the
+ * curve's content or the rate changes. The last one stays on screen until a
+ * newer one arrives, and answers to superseded requests are dropped, so
+ * dragging never flickers. `current` says whether `response` is for this very
+ * curve (per-band curves are drawn only then).
  */
-export function useEqResponse(curve: EqCurve | null, rate: number): EqResponse | null {
-  const [response, setResponse] = useState<EqResponse | null>(null);
+export function useEqResponse(curve: EqCurve | null, rate: number): { response: EqResponse | null; current: boolean } {
+  const effectiveRate = rate || DEFAULT_RATE;
+  const key = curve ? `${effectiveRate}:${JSON.stringify(curve)}` : '';
+  const [drawn, setDrawn] = useState<Drawn | null>(last);
   useEffect(() => {
-    if (!curve) return;
-    let current = true;
+    if (!curve || last?.key === key) {
+      if (last) setDrawn(last);
+      return;
+    }
+    let wanted = true;
     dspApi
-      .eqResponse(curve, rate || DEFAULT_RATE, DRAW_FREQS)
-      .then((r) => current && setResponse(r))
-      .catch(() => {});
+      .eqResponse(curve, effectiveRate, DRAW_FREQS)
+      .then((response) => {
+        if (!wanted) return;
+        last = { key, response };
+        setDrawn(last);
+      })
+      .catch((e: unknown) => console.warn('could not compute the EQ response', e));
     return () => {
-      current = false;
+      wanted = false;
     };
-  }, [curve, rate]);
-  return response;
+    // `key` stands for the curve's content and the rate: a curve that is
+    // equal but a new object (every settings round trip) is not refetched.
+  }, [key]);
+  return { response: drawn?.response ?? null, current: drawn != null && drawn.key === key };
 }

@@ -88,6 +88,8 @@ interface ResponseGraphProps {
   curve: EqCurve;
   /** The curve's response as the core plays it, at `DRAW_FREQS`. */
   response: EqResponse | null;
+  /** Whether `response` is for this very curve (not the one before it). */
+  current: boolean;
   /** The EQ is shaping the sound (on and not bypassed). */
   active: boolean;
   selected: number | null;
@@ -107,6 +109,7 @@ interface ResponseGraphProps {
 export function ResponseGraph({
   curve,
   response,
+  current,
   active,
   selected,
   onSelect,
@@ -136,14 +139,19 @@ export function ResponseGraph({
     () => DRAW_FREQS.map((_, i) => clamp(response?.total[i] ?? 0, -MAX_GAIN_DB - 2, MAX_GAIN_DB + 2)),
     [response],
   );
-  const shown = useMorph(target, drag != null);
+  // The first response jumps into place instead of rising from a flat line.
+  const hadResponse = useRef(response != null);
+  const shown = useMorph(target, drag != null || !hadResponse.current);
+  useEffect(() => {
+    if (response) hadResponse.current = true;
+  }, [response]);
   const curvePath = useMemo(() => path(DRAW_FREQS.map((f, i) => [fx(f), gy(shown[i]!)])), [shown]);
   const sel = selected != null ? nodes[selected] : undefined;
   const selPath = useMemo(() => {
-    const one = sel && parametric ? response?.bands[sel.index] : undefined;
+    const one = sel && parametric && current ? response?.bands[sel.index] : undefined;
     if (!one) return null;
     return path(DRAW_FREQS.map((f, i) => [fx(f), gy(clamp(one[i] ?? 0, -MAX_GAIN_DB - 2, MAX_GAIN_DB + 2))]));
-  }, [sel, parametric, response]);
+  }, [sel, parametric, response, current]);
 
   const spectrumPath = useMemo(() => {
     if (!showSpectrum) return null;
@@ -267,8 +275,12 @@ export function ResponseGraph({
               <path d={selPath} fill="none" style={{ stroke: 'var(--ac)' }} strokeWidth="1.2" strokeDasharray="4 3" />
             </>
           )}
-          <path d={`${curvePath} L${X1} ${MID} L${X0} ${MID} Z`} fill="url(#eqf)" className="eq-fill" />
-          <path d={curvePath} fill="none" className="eq-curve" strokeWidth="2.2" strokeLinejoin="round" />
+          {response && (
+            <>
+              <path d={`${curvePath} L${X1} ${MID} L${X0} ${MID} Z`} fill="url(#eqf)" className="eq-fill" />
+              <path d={curvePath} fill="none" className="eq-curve" strokeWidth="2.2" strokeLinejoin="round" />
+            </>
+          )}
           {qHandles && sel && (
             <>
               <line

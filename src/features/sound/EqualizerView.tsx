@@ -72,7 +72,7 @@ export function EqualizerView() {
 
   const curve = settings ? activeCurve(settings) : null;
   // Solved and designed by the core, at the playing stream's rate.
-  const response = useEqResponse(curve, sampleRate);
+  const { response, current } = useEqResponse(curve, sampleRate);
   const boost = response?.maxBoostDb ?? 0;
 
   if (!settings || !curve) {
@@ -224,7 +224,7 @@ export function EqualizerView() {
       </div>
       <div className="mono flex items-center gap-3.5 text-[10.5px]">
         <span className="t3">
-          Max boost <span style={{ color: 'var(--tx)' }}>{formatGain(active ? boost : 0)}</span>
+          Max boost <span style={{ color: 'var(--tx)' }}>{response ? formatGain(active ? boost : 0) : '—'}</span>
         </span>
         <span className="t3">
           Preamp <span style={{ color: 'var(--tx)' }}>{formatGain(active ? preamp : 0)}</span>
@@ -306,6 +306,7 @@ export function EqualizerView() {
           <ResponseGraph
             curve={curve}
             response={response}
+            current={current}
             active={active}
             selected={bandSel}
             onSelect={setSelected}

@@ -100,8 +100,9 @@ pub fn curve_response(curve: &EqCurve, rate: f64, freqs: &[f64], cache: &mut Gra
             .collect(),
         _ => Vec::new(),
     };
+    let centres: Vec<f64> = live.iter().map(|(i, _)| slots[*i].freq).collect();
     let coeffs: Vec<Coeffs> = live.into_iter().map(|(_, c)| c).collect();
-    EqResponse { total, bands, max_boost_db: max_boost_db(&coeffs, rate) }
+    EqResponse { total, bands, max_boost_db: max_boost_db(&coeffs, &centres, rate) }
 }
 
 /// The solver last used, rebuilt when the layout or the rate changes.

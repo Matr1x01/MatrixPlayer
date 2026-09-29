@@ -17,6 +17,7 @@
 //! change, and the crossfade's scratch buffer when the format does.
 
 use super::biquad::{Coeffs, State, max_boost_db};
+use super::matched::shelf_design;
 use super::settings::{AbSlot, EqBand, EqMode, FilterKind};
 
 /// Moving bands take a step this often (frames).
@@ -96,14 +97,16 @@ impl Chain {
         }
     }
 
-    /// Whether `bands` can be glided to: the same slots, of the same kinds,
-    /// and no band that shapes the sound switched on or off (a band still
-    /// gliding towards flat is shaping it now).
+    /// Whether `bands` can be glided to: the same slots, of the same kinds
+    /// and filter designs, and no band that shapes the sound switched on or
+    /// off (a band still gliding towards flat is shaping it now).
     fn glides_to(&self, bands: &[EqBand]) -> bool {
         self.slots.len() == bands.len()
             && self.slots.iter().zip(bands).all(|(slot, band)| {
                 let old = &slot.target;
+                let shelf = matches!(band.kind, FilterKind::LowShelf | FilterKind::HighShelf);
                 old.kind == band.kind
+                    && (!shelf || shelf_design(old.q) == shelf_design(band.q))
                     && (old.enabled == band.enabled || (is_flat(&slot.now) && is_flat(old) && is_flat(band)))
             })
     }
@@ -212,9 +215,18 @@ impl Chain {
         self.slots.iter().any(|s| s.live || is_live(&s.target))
     }
 
-    fn target_coeffs(&self) -> Vec<Coeffs> {
-        self.slots.iter().filter(|s| is_live(&s.target)).map(|s| Coeffs::for_band(&s.target, self.rate)).collect()
+    /// The largest boost of the bands being moved to.
+    fn target_boost(&self) -> f64 {
+        boost_of(self.slots.iter().map(|s| &s.target), self.rate)
     }
+}
+
+/// The largest boost (dB) the live bands among `bands` add together.
+fn boost_of<'a>(bands: impl Iterator<Item = &'a EqBand>, rate: f64) -> f64 {
+    let live: Vec<&EqBand> = bands.filter(|b| is_live(b)).collect();
+    let coeffs: Vec<Coeffs> = live.iter().map(|b| Coeffs::for_band(b, rate)).collect();
+    let centres: Vec<f64> = live.iter().map(|b| b.freq).collect();
+    max_boost_db(&coeffs, &centres, rate)
 }
 
 fn glide_step(rate: f64) -> f64 {
@@ -273,7 +285,7 @@ impl Equalizer {
         self.scratch = vec![0.0; BLOCK_FRAMES * channels];
         self.finish_crossfade();
         self.chain.set_format(rate, channels);
-        self.max_boost_db = max_boost_db(&self.chain.target_coeffs(), rate);
+        self.max_boost_db = self.chain.target_boost();
     }
 
     /// Moves to `bands` (one per slot) of `curve`: gliding when only band
@@ -295,13 +307,11 @@ impl Equalizer {
             self.curve = curve;
             self.fade_left = self.fade_len;
         }
-        self.max_boost_db = max_boost_db(&self.chain.target_coeffs(), self.rate);
+        self.max_boost_db = self.chain.target_boost();
         if let Some((_, bands)) = &self.pending {
             // Heard as soon as the crossfade ends, perhaps mid-buffer: auto
             // preamp and the limiter must already allow for it.
-            let waiting: Vec<Coeffs> =
-                bands.iter().filter(|b| is_live(b)).map(|b| Coeffs::for_band(b, self.rate)).collect();
-            self.max_boost_db = self.max_boost_db.max(max_boost_db(&waiting, self.rate));
+            self.max_boost_db = self.max_boost_db.max(boost_of(bands.iter(), self.rate));
         }
     }
 
@@ -361,7 +371,7 @@ impl Equalizer {
         if let Some((curve, bands)) = self.pending.take() {
             self.chain = Chain::new(&bands, self.rate, self.channels);
             self.curve = curve;
-            self.max_boost_db = max_boost_db(&self.chain.target_coeffs(), self.rate);
+            self.max_boost_db = self.chain.target_boost();
         }
     }
 

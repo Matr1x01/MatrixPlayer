@@ -34,8 +34,12 @@ use std::sync::OnceLock;
 /// −0.5 dBTP: headroom for the inter-sample overs a DAC or a lossy encoder
 /// adds on top of the true peak measured here.
 pub const CEILING: f64 = 0.944_060_876_285_923_4;
-/// How far the limiter looks ahead (its latency).
-const LOOKAHEAD_S: f64 = 0.0015;
+/// How long the gain takes to come down to a peak's reduction. The
+/// look-ahead (and latency) is this plus the detector's delay and margin:
+/// about 1.5 ms at 44.1 and 48 kHz.
+const RAMP_S: f64 = 0.0013;
+/// The shortest ramp, in frames, so low rates do not get a near step.
+const MIN_RAMP: usize = 8;
 const RELEASE_S: f64 = 0.08;
 /// Taps per phase of the 4× interpolation filter.
 const TAPS: usize = 12;
@@ -101,10 +105,10 @@ impl Limiter {
     /// Sizes everything for a format and starts from silence.
     pub fn set_format(&mut self, rate: f64, channels: usize) {
         self.channels = channels;
-        self.delay = ((LOOKAHEAD_S * rate).round() as usize).max(DETECT_DELAY + MARGIN + 1);
         // A peak detected at frame j needs its reduction on the output
         // frames holding j − DETECT_DELAY ± MARGIN (see `gain`).
-        self.avg_len = self.delay + 1 - DETECT_DELAY - MARGIN;
+        self.avg_len = ((RAMP_S * rate).round() as usize).max(MIN_RAMP);
+        self.delay = self.avg_len - 1 + DETECT_DELAY + MARGIN;
         self.hold_len = self.avg_len + 2 * MARGIN;
         self.frames = (self.delay + 1).max(TAPS);
         self.history = vec![0.0; 2 * self.frames * channels];
@@ -142,8 +146,10 @@ impl Limiter {
         std::mem::take(&mut self.limited)
     }
 
-    /// Delays `samples` (interleaved), limiting them when `detect` is set or
-    /// while it still recovers from limiting.
+    /// Delays `samples` (interleaved), limiting them when `detect` is set.
+    /// Without it, a limiter still reducing the gain only recovers: new
+    /// peaks are no longer looked for (nothing upstream raises them any
+    /// more), so it lets go within about a second and is exact again.
     pub fn process(&mut self, samples: &mut [f64], detect: bool) {
         let ch = self.channels;
         let frames = self.frames;
@@ -151,7 +157,7 @@ impl Limiter {
             let at = self.pos * ch;
             self.history[at..at + ch].copy_from_slice(frame);
             self.history[at + frames * ch..at + frames * ch + ch].copy_from_slice(frame);
-            let gain = if detect || !self.idle() { self.gain() } else { 1.0 };
+            let gain = if detect || !self.idle() { self.gain(detect) } else { 1.0 };
             let out = (self.pos + frames - self.delay) * ch;
             for (c, s) in frame.iter_mut().enumerate() {
                 *s = self.history[out + c] * gain;
@@ -170,8 +176,8 @@ impl Limiter {
     /// gain at most r_j on the output frames j + avg_len − 1 … j + hold_len
     /// − 1, which hold exactly those inputs since
     /// delay = avg_len − 1 + DETECT_DELAY + MARGIN.
-    fn gain(&mut self) -> f64 {
-        let needed = self.needed();
+    fn gain(&mut self, detect: bool) -> f64 {
+        let needed = if detect { self.needed() } else { 1.0 };
         while self.hold.back().is_some_and(|&(_, v)| v >= needed) {
             self.hold.pop_back();
         }
