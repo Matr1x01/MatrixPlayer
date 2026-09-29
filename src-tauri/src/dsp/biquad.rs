@@ -1,9 +1,16 @@
-//! Second-order IIR filters from Robert Bristow-Johnson's Audio EQ Cookbook,
-//! run in 64-bit float. The UI draws its response curve from the same
-//! formulas, so what is shown is exactly what is heard.
+//! Second-order IIR filters, run in 64-bit float.
+//!
+//! Bands are designed to match their analog prototypes (the Audio EQ
+//! Cookbook's) all the way to Nyquist, where the cookbook's bilinear designs
+//! bend away: see [`super::matched`]. The cookbook's own formulas remain
+//! for what has no matched design here (a shelf whose Q is not Butterworth)
+//! and for the rare band whose matched formulas give no real filter.
+//! The UI draws its curve from these coefficients, so what is shown is
+//! exactly what is heard.
 
 use std::f64::consts::PI;
 
+use super::matched;
 use super::settings::{EqBand, FilterKind};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,9 +23,36 @@ pub struct Coeffs {
 }
 
 impl Coeffs {
-    /// Coefficients for `band` at sample rate `fs`. The centre frequency is
-    /// kept below Nyquist so high bands stay stable at low sample rates.
+    /// Passes the signal through unchanged.
+    pub const IDENTITY: Self = Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0 };
+
+    /// Coefficients for `band` at sample rate `fs`: the matched design where
+    /// there is one. A flat peak or shelf is exactly the identity.
     pub fn for_band(band: &EqBand, fs: f64) -> Self {
+        let gain_kind = matches!(band.kind, FilterKind::Peak | FilterKind::LowShelf | FilterKind::HighShelf);
+        if gain_kind && band.gain_db == 0.0 {
+            return Self::IDENTITY;
+        }
+        // Kept just below Nyquist, where the designs are defined.
+        let f0 = band.freq.min(fs * 0.49).max(1.0);
+        let w0 = 2.0 * PI * f0 / fs;
+        let q = band.q.max(0.05);
+        let matched = match band.kind {
+            FilterKind::Peak => matched::peak(w0, band.gain_db, q),
+            FilterKind::LowPass => matched::low_pass(w0, q),
+            FilterKind::HighPass => matched::high_pass(w0, q),
+            FilterKind::Notch => matched::notch(w0, q),
+            FilterKind::LowShelf | FilterKind::HighShelf if matched::is_butterworth(q) => {
+                matched::shelf(2.0 * f0 / fs, 10f64.powf(band.gain_db / 20.0), band.kind == FilterKind::HighShelf)
+            }
+            FilterKind::LowShelf | FilterKind::HighShelf => None,
+        };
+        matched.unwrap_or_else(|| Self::cookbook(band, fs))
+    }
+
+    /// The Audio EQ Cookbook's bilinear design. The centre frequency is kept
+    /// below Nyquist so high bands stay stable at low sample rates.
+    pub fn cookbook(band: &EqBand, fs: f64) -> Self {
         let f0 = band.freq.min(fs * 0.45).max(1.0);
         let w0 = 2.0 * PI * f0 / fs;
         let (sin, cos) = w0.sin_cos();
@@ -79,7 +113,7 @@ impl Coeffs {
 
 /// Filter memory for one channel (transposed direct form II, which behaves
 /// well numerically in floating point).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct State {
     z1: f64,
     z2: f64,
@@ -93,17 +127,31 @@ impl State {
         self.z2 = c.b2 * x - c.a2 * y;
         y
     }
+
+    /// Zeroes memories too small to matter, before they turn subnormal.
+    pub fn flush_denormals(&mut self) {
+        for z in [&mut self.z1, &mut self.z2] {
+            if z.abs() < super::DENORMAL {
+                *z = 0.0;
+            }
+        }
+    }
 }
 
-/// The largest boost the filters `coeffs` apply anywhere in the audible
-/// range, sampled on a log grid (what "auto preamp" compensates).
-pub fn max_boost_db(coeffs: &[Coeffs], fs: f64) -> f64 {
+/// The largest boost the filters `coeffs` add anywhere from 20 Hz up to
+/// Nyquist (what "auto preamp" compensates), sampled on a log grid and at
+/// `centres`, the bands' own frequencies (a peak is at its highest there,
+/// however narrow).
+pub fn max_boost_db(coeffs: &[Coeffs], centres: &[f64], fs: f64) -> f64 {
     if coeffs.is_empty() {
         return 0.0;
     }
-    (0..=240)
+    let top = 0.499 * fs;
+    (0u32..)
         .map(|i| 20.0 * 1000f64.powf(f64::from(i) / 240.0))
-        .filter(|f| *f < fs / 2.0)
+        .take_while(|f| *f < top)
+        .chain([top])
+        .chain(centres.iter().map(|f| f.min(top)))
         .map(|f| coeffs.iter().map(|c| c.magnitude_db(f, fs)).sum::<f64>())
         .fold(f64::MIN, f64::max)
         .max(0.0)
@@ -156,9 +204,14 @@ mod tests {
     fn max_boost_finds_the_peak_of_the_combined_curve() {
         let coeffs = |bands: &[EqBand]| bands.iter().map(|b| Coeffs::for_band(b, FS)).collect::<Vec<_>>();
         let bands = [EqBand::peak(1000.0, 3.0, 1.0), EqBand::peak(1100.0, 2.0, 1.0), EqBand::peak(100.0, -8.0, 1.0)];
-        let boost = max_boost_db(&coeffs(&bands), FS);
+        let boost = max_boost_db(&coeffs(&bands), &[], FS);
         assert!((4.8..5.0).contains(&boost), "{boost}");
-        assert_eq!(max_boost_db(&coeffs(&[EqBand::peak(500.0, -3.0, 1.0)]), FS), 0.0);
+        assert_eq!(max_boost_db(&coeffs(&[EqBand::peak(500.0, -3.0, 1.0)]), &[], FS), 0.0);
+        // A peak above 20 kHz, or too narrow for the grid, is still found.
+        let high = [Coeffs::for_band(&EqBand::peak(21_500.0, 12.0, 2.0), 44_100.0)];
+        assert!((max_boost_db(&high, &[21_500.0], 44_100.0) - 12.0).abs() < 0.01);
+        let narrow = [EqBand::peak(1_234.0, 9.0, 20.0)];
+        assert!((max_boost_db(&coeffs(&narrow), &[1_234.0], FS) - 9.0).abs() < 1e-6);
     }
 
     #[test]

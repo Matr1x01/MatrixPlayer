@@ -45,6 +45,7 @@ pub fn run() {
         std::process::exit(1);
     }
     log::info!("{}", gstreamer::version_string());
+    audio::prefer_float_decoders();
 
     tauri::Builder::default()
         // Must come first: a second launch hands its arguments (files to
@@ -149,6 +150,7 @@ pub fn run() {
             commands::dsp::dsp_export_presets,
             commands::dsp::dsp_import_presets,
             commands::dsp::dsp_set_analysis,
+            commands::dsp::dsp_eq_response,
             commands::dsp::audio_output_devices,
             commands::dsp::player_set_output_device,
             commands::dsp::player_set_gapless,

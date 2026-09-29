@@ -185,6 +185,7 @@ impl AudioEngine {
     /// anything the failed stream posted is ignored.
     pub fn recover(&self) {
         let _ = self.playbin.set_state(gst::State::Null);
+        self.dsp.restart();
         self.shared.playing.store(false, Ordering::SeqCst);
         self.shared.starting.lock().unwrap().clear();
         self.shared.epoch.fetch_add(1, Ordering::SeqCst);
@@ -214,6 +215,7 @@ impl AudioEngine {
     /// everything it did post as stale. Callers treat the engine as READY.
     fn reset(&self) -> AppResult<()> {
         self.playbin.set_state(gst::State::Ready)?;
+        self.dsp.restart();
         self.shared.playing.store(false, Ordering::SeqCst);
         self.shared.epoch.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -661,38 +663,125 @@ mod tests {
     /// Plays a 440 Hz fixture at 0.2 of full scale through the whole engine
     /// with `settings` and the volume at 100%; returns the output peak (dBFS).
     fn output_peak_db(settings: &crate::dsp::settings::DspSettings) -> f64 {
-        gst::init().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.flac");
         write_flac(&a, 1.0, "A");
-        let sink = gst::ElementFactory::make("fakesink")
-            .name("matrixplayer-output")
-            .property("sync", false)
-            .property("signal-handoffs", true)
-            .build()
-            .unwrap();
-        let peak = Arc::new(Mutex::new(0.0f64));
-        let seen = peak.clone();
-        sink.connect("handoff", false, move |args| {
+        let played = play_through(&a, settings, None);
+        20.0 * played.peaks.iter().copied().fold(0.0, f64::max).log10()
+    }
+
+    /// What reached the output while a file played through the engine.
+    struct Played {
+        events: Vec<EngineEvent>,
+        /// Peak level of each output channel.
+        peaks: Vec<f64>,
+        buffers: usize,
+    }
+
+    /// Plays `path` through the whole engine with `settings` and the volume
+    /// at 100%, into a fake output that accepts only `caps` (when given).
+    fn play_through(
+        path: &std::path::Path,
+        settings: &crate::dsp::settings::DspSettings,
+        caps: Option<&str>,
+    ) -> Played {
+        gst::init().unwrap();
+        let description = match caps {
+            Some(caps) => format!("capsfilter caps={caps} ! fakesink name=out sync=false signal-handoffs=true"),
+            None => "fakesink name=out sync=false signal-handoffs=true".to_owned(),
+        };
+        let bin = gst::parse::bin_from_description(&description, true).unwrap();
+        let captured = Arc::new(Mutex::new((Vec::<f64>::new(), 0usize)));
+        let seen = captured.clone();
+        bin.by_name("out").unwrap().connect("handoff", false, move |args| {
             let buffer = args[1].get::<gst::Buffer>().ok()?;
+            let pad = args[2].get::<gst::Pad>().ok()?;
+            let caps = pad.current_caps()?;
+            let channels = gst_audio::AudioInfo::from_caps(&caps).ok()?.channels() as usize;
             let map = buffer.map_readable().ok()?;
-            let p = map
-                .as_slice()
-                .chunks_exact(8)
-                .map(|b| f64::from_ne_bytes(b.try_into().unwrap()).abs())
-                .fold(0.0, f64::max);
-            let mut max = seen.lock().unwrap();
-            *max = max.max(p);
+            let mut captured = seen.lock().unwrap();
+            captured.0.resize(channels, 0.0);
+            for (i, bytes) in map.as_slice().chunks_exact(8).enumerate() {
+                let v = f64::from_ne_bytes(bytes.try_into().unwrap()).abs();
+                captured.0[i % channels] = captured.0[i % channels].max(v);
+            }
+            captured.1 += 1;
             None
         });
         let (tx, mut rx) = unbounded_channel();
-        let engine =
-            AudioEngine::new(tx, output::Output { sink, backend: output::OutputBackend::Auto, device: None }).unwrap();
+        let out = output::Output { sink: bin.upcast(), backend: output::OutputBackend::Auto, device: None };
+        let engine = AudioEngine::new(tx, out).unwrap();
         engine.dsp().apply(settings);
         engine.set_volume(1.0);
-        engine.load(&path_to_uri(&a).unwrap(), None, true).unwrap();
-        collect_until(&mut rx, |e| matches!(e, EngineEvent::EndOfStream));
-        20.0 * peak.lock().unwrap().log10()
+        engine.load(&path_to_uri(path).unwrap(), None, true).unwrap();
+        let events = collect_until(&mut rx, |e| matches!(e, EngineEvent::EndOfStream | EngineEvent::Error(_)));
+        let (peaks, buffers) = captured.lock().unwrap().clone();
+        Played { events, peaks, buffers }
+    }
+
+    fn decoded(events: &[EngineEvent]) -> Option<&StreamFormat> {
+        events.iter().find_map(|e| if let EngineEvent::DecodedFormat(f) = e { Some(f) } else { None })
+    }
+
+    fn output_format(events: &[EngineEvent]) -> Option<&StreamFormat> {
+        events.iter().find_map(|e| if let EngineEvent::OutputFormat(f) = e { Some(f) } else { None })
+    }
+
+    /// Lossy streams keep their resolution: MP3 and Opus decode to float
+    /// when gst-libav is installed.
+    #[test]
+    fn lossy_streams_decode_to_float() {
+        use crate::dsp::settings::DspSettings;
+        use crate::test_support::write_encoded;
+
+        gst::init().unwrap();
+        super::super::prefer_float_decoders();
+        let dir = tempfile::tempdir().unwrap();
+        for (file, encoder, float_decoder) in
+            [("a.mp3", "lamemp3enc", "avdec_mp3float"), ("a.opus", "opusenc ! oggmux", "avdec_opus")]
+        {
+            let path = dir.path().join(file);
+            if gst::Registry::get().lookup_feature(float_decoder).is_none() || !write_encoded(&path, 0.5, encoder) {
+                eprintln!("skipping {file}: {encoder} or {float_decoder} is not installed");
+                continue;
+            }
+            let played = play_through(&path, &DspSettings::default(), None);
+            let format = decoded(&played.events).unwrap_or_else(|| panic!("{file} decoded: {:#?}", played.events));
+            assert!(format.float, "{file} decoded as {format:?}");
+        }
+    }
+
+    /// An output locked to 48 kHz still gets the 44.1 kHz file, resampled.
+    #[test]
+    fn resamples_for_an_output_locked_to_another_rate() {
+        use crate::dsp::settings::DspSettings;
+        use crate::test_support::write_flac_format;
+
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.flac");
+        write_flac_format(&a, 0.5, 44_100, 2);
+        let played = play_through(&a, &DspSettings::default(), Some("audio/x-raw,rate=48000"));
+        assert_eq!(decoded(&played.events).map(|f| f.sample_rate), Some(44_100));
+        assert_eq!(output_format(&played.events).map(|f| f.sample_rate), Some(48_000));
+        assert!(played.buffers > 0 && played.peaks.iter().all(|p| *p > 0.1), "audio arrived: {:?}", played.peaks);
+    }
+
+    /// Mono files are upmixed at unity before processing, so stereo
+    /// controls apply; the signal path still reports the file's one channel.
+    #[test]
+    fn mono_files_are_upmixed_so_balance_works() {
+        use crate::dsp::settings::DspSettings;
+        use crate::test_support::write_flac_format;
+
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("mono.flac");
+        write_flac_format(&a, 0.5, 44_100, 1);
+        let played = play_through(&a, &DspSettings { balance: 1.0, ..DspSettings::default() }, None);
+        assert_eq!(decoded(&played.events).map(|f| f.channels), Some(1));
+        assert_eq!(output_format(&played.events).map(|f| f.channels), Some(2));
+        let [left, right] = played.peaks[..] else { panic!("stereo out: {:?}", played.peaks) };
+        assert_eq!(left, 0.0, "balance full right silences the left");
+        assert!((20.0 * right.log10() - 20.0 * 0.2f64.log10()).abs() < 0.2, "unity upmix: {right}");
     }
 
     /// Settings (EQ, fades) are heard only once processed audio reaches the

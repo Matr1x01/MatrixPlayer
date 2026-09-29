@@ -12,9 +12,10 @@ import { useNavigation } from '@/stores/navigation';
 import { usePlayer } from '@/stores/player';
 import { run } from '@/stores/toasts';
 import type { DeviceKind, OutputDevices, ReplayGainMode } from '@/types/dsp';
+import type { StreamFormat } from '@/types/player';
 
-import { CenterSlider } from './controls';
-import { STAGE_DOT, processingSummary, replayGainText, useChain, type ChainStage } from './chain';
+import { CenterSlider, CrossfeedPresets } from './controls';
+import { STAGE_DOT, crossfeedDetail, processingSummary, replayGainText, useChain, type ChainStage } from './chain';
 import { formatGain } from './eqMath';
 
 const DEVICE_ICON: Record<DeviceKind, IconName> = {
@@ -55,6 +56,17 @@ function Setting({
       {children}
     </div>
   );
+}
+
+/**
+ * Dither only matters when the output takes fewer bits than the 64-bit
+ * processing, and the output sets it up when its format is negotiated, so
+ * changing it reopens the track.
+ */
+function ditherHint(output: StreamFormat | null): string {
+  if (!output) return 'Applied only when reducing bit depth';
+  if (output.float) return 'Not needed · the output is float';
+  return `For the ${output.bits}-bit output · reopens the track to apply`;
 }
 
 /** Scale marks, equally spaced: the top of the meter is expanded. */
@@ -375,14 +387,28 @@ export function DspView() {
                     <span className="mono w-[60px] text-right text-[11.5px]">{formatGain(settings.autoPreampAllowanceDb)}</span>
                   </div>
                 </Setting>
-                <Setting title="Soft fade on pause & seek" hint="120 ms ramp, avoids clicks">
+                <Setting title="Soft fades" hint="On pause, seek, skip and stop: no clicks">
                   <Toggle on={settings.softFades} onChange={(softFades) => patchDsp({ softFades })} label="Soft fade" />
                 </Setting>
-                <Setting id="dsp-crossfeed" title="Headphone crossfeed" hint="Softens hard-panned mixes">
+                <Setting
+                  id="dsp-crossfeed"
+                  title="Headphone crossfeed"
+                  hint={settings.crossfeed ? `bs2b · ${crossfeedDetail(settings.crossfeedPreset)}` : 'Softens hard-panned mixes'}
+                >
                   <Toggle on={settings.crossfeed} onChange={(crossfeed) => patchDsp({ crossfeed })} label="Headphone crossfeed" />
                 </Setting>
-                <Setting title="Dither" hint="Applied only when reducing bit depth">
-                  <Toggle on={settings.dither} onChange={(dither) => patchDsp({ dither })} label="Dither" />
+                {settings.crossfeed && (
+                  <Setting title="Crossfeed preset" hint="How much of each channel the other ear hears">
+                    <CrossfeedPresets value={settings.crossfeedPreset} />
+                  </Setting>
+                )}
+                <Setting title="Dither" hint={ditherHint(signal.output)}>
+                  <Toggle
+                    on={settings.dither}
+                    disabled={signal.output?.float === true}
+                    onChange={(dither) => patchDsp({ dither })}
+                    label="Dither"
+                  />
                 </Setting>
               </div>
             )}

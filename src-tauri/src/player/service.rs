@@ -29,6 +29,9 @@ const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 const PERSIST_INTERVAL: Duration = Duration::from_secs(2);
 /// The longest a soft pause waits for its fade to become audible.
 const MAX_FADE_WAIT: Duration = Duration::from_millis(900);
+/// Fade before a seek, a skip or a stop: short, so the command still feels
+/// immediate, but it never cuts the waveform off mid-cycle.
+const SKIP_FADE_S: f64 = 0.04;
 /// While skipping a run of files that cannot play, each of the first few is
 /// reported on its own; the rest are summed up in one error.
 const REPORTED_PER_RUN: usize = 3;
@@ -99,6 +102,10 @@ pub enum PlayerCommand {
     SetGapless(bool),
     /// Switches to another output; whatever was playing is reopened there.
     SetOutput(Box<Output>),
+    /// Reopens the current track where it is, so an output setting that is
+    /// fixed when the format is negotiated (dither) takes effect. Only done
+    /// when the output takes integer samples: float outputs never dither.
+    RenegotiateOutput,
     Insert {
         tracks: Vec<Arc<TrackInfo>>,
         mode: InsertMode,
@@ -130,8 +137,19 @@ pub enum PlayerCommand {
 /// Messages the service sends itself from timers.
 #[derive(Debug)]
 enum Internal {
-    /// A soft pause's fade has reached the speakers.
+    /// A fade to silence has reached the speakers.
     FadedOut(u64),
+}
+
+/// What a fade to silence leads to, once the output has played it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterFade {
+    Pause,
+    Seek(Duration),
+    /// Open the current entry, which the queue and the UI have already
+    /// moved to. It plays if the intent is still to play by then.
+    Load,
+    Stop,
 }
 
 enum Request {
@@ -258,6 +276,8 @@ struct Player {
     play_after_seek: bool,
     /// Invalidates fade timers that a later command made pointless.
     fade_token: u64,
+    /// What the fade to silence under way is for.
+    after_fade: Option<AfterFade>,
 
     error: Option<PlayerError>,
     /// Failures since the last track that played, to stop skipping through
@@ -304,6 +324,7 @@ impl Player {
             pending_seek: None,
             play_after_seek: false,
             fade_token: 0,
+            after_fade: None,
             error: None,
             failures: 0,
             direction: Direction::Forward,
@@ -412,12 +433,13 @@ impl Player {
                 settings::set(&self.db, "player.gapless", &gapless).await
             }
             PlayerCommand::SetOutput(output) => self.set_output(*output),
+            PlayerCommand::RenegotiateOutput => self.renegotiate_output(),
             PlayerCommand::Insert { tracks, mode, start } => self.insert(tracks, mode, start),
             PlayerCommand::PlayEntry(id) => {
                 self.queue.jump_to(id).ok_or_else(|| AppError::InvalidArgument("no such queue entry".into()))?;
                 self.failures = 0;
                 self.direction = Direction::Forward;
-                self.load_current(true)
+                self.switch_track(true, None)
             }
             PlayerCommand::RemoveEntry(id) => self.remove(id),
             PlayerCommand::MoveEntries { ids, before } => {
@@ -434,7 +456,7 @@ impl Player {
                 self.failures = 0;
                 self.direction = Direction::Forward;
                 let seek = (position > Duration::from_secs(1)).then_some((position, false));
-                self.load_current_at(false, seek)
+                self.switch_track(false, seek)
             }
             PlayerCommand::ClearOthers => {
                 self.queue.clear_others();
@@ -445,19 +467,11 @@ impl Player {
             PlayerCommand::ClearQueue => {
                 self.save_undo();
                 self.queue.clear();
-                self.engine.stop()?;
-                self.engine_state = EngineState::Ready;
-                self.intent = Intent::Stop;
-                self.loading = false;
-                self.seeking = false;
-                self.position = Duration::ZERO;
                 self.duration = None;
                 self.error = None;
                 self.emit_track();
                 self.emit_queue();
-                self.emit_position();
-                self.refresh_status();
-                Ok(())
+                self.stop()
             }
             PlayerCommand::UndoQueue => self.undo(),
         }
@@ -468,7 +482,7 @@ impl Player {
         if self.queue.len() == 0 {
             return;
         }
-        let position = if self.loading { self.position } else { self.engine.position().unwrap_or(self.position) };
+        let position = self.heard_position();
         self.undo = Some(Undo { queue: self.queue.clone(), position, intent: self.intent });
     }
 
@@ -488,15 +502,13 @@ impl Player {
         let resume_at = (position > Duration::from_secs(1)).then_some(position);
         match intent {
             Intent::Stop => {
-                self.intent = Intent::Stop;
-                self.engine.stop()?;
-                self.engine_state = EngineState::Ready;
+                self.stop()?;
                 self.switch_to_current()
             }
-            Intent::Pause => self.load_current_at(false, resume_at.map(|p| (p, false))),
+            Intent::Pause => self.switch_track(false, resume_at.map(|p| (p, false))),
             Intent::Play => match resume_at {
-                Some(p) => self.load_current_at(false, Some((p, true))),
-                None => self.load_current(true),
+                Some(p) => self.switch_track(false, Some((p, true))),
+                None => self.switch_track(true, None),
             },
         }
     }
@@ -514,10 +526,16 @@ impl Player {
         if self.seeking && self.play_after_seek {
             return Ok(());
         }
+        // A seek or a skip is fading out: it goes on to play.
+        if matches!(self.after_fade, Some(AfterFade::Seek(_) | AfterFade::Load)) {
+            self.intent = Intent::Play;
+            self.refresh_status();
+            return Ok(());
+        }
         let unloaded = !self.loading && matches!(self.engine_state, EngineState::Ready | EngineState::Null);
         if self.intent == Intent::Stop || unloaded {
             self.failures = 0;
-            return self.load_current(true);
+            return self.switch_track(true, None);
         }
         self.intent = Intent::Play;
         self.cancel_fade();
@@ -537,10 +555,12 @@ impl Player {
             self.refresh_status();
             return Ok(());
         }
+        let audible = self.audible();
         self.intent = Intent::Pause;
-        let audible = self.engine_state == EngineState::Playing && !self.loading && !self.seeking;
-        if self.soft_fades() && audible {
-            self.fade_out_then_pause();
+        if self.after_fade.is_some() {
+            // Already fading out for a seek or a skip, which now ends paused.
+        } else if self.soft_fades() && audible {
+            self.fade_out_then(AfterFade::Pause);
         } else {
             self.engine.pause()?;
         }
@@ -553,20 +573,39 @@ impl Player {
         self.intent == Intent::Play || self.pending_seek.is_some_and(|(_, play)| play) || self.play_after_seek
     }
 
+    /// Whether the track is being heard right now: playing, and neither
+    /// opening nor seeking.
+    fn audible(&self) -> bool {
+        self.intent == Intent::Play && self.engine_state == EngineState::Playing && !self.loading && !self.seeking
+    }
+
     fn soft_fades(&self) -> bool {
         self.dsp.settings().soft_fades
     }
 
-    /// Fades to silence, then pauses once the silence is what the output
-    /// plays: processing runs ahead of the speakers by the output buffer.
-    fn fade_out_then_pause(&mut self) {
+    /// Whether a seek, skip or stop the user asked for fades out first: when
+    /// the track is being heard and soft fades are on, or when a fade to
+    /// silence is already under way (the new action takes it over).
+    fn fade_first(&self) -> bool {
+        self.after_fade.is_some() || (self.audible() && self.soft_fades())
+    }
+
+    /// Fades to silence, then does `action` once the silence is what the
+    /// output plays: processing runs ahead of the speakers by the output
+    /// buffer. A fade already under way ends in `action` instead of starting
+    /// over, so a burst of seeks or skips performs only the last one.
+    fn fade_out_then(&mut self, action: AfterFade) {
+        if self.after_fade.replace(action).is_some() {
+            return;
+        }
+        let seconds = if action == AfterFade::Pause { FADE_S } else { SKIP_FADE_S };
         self.fade_token += 1;
-        self.dsp.fade(0.0, FADE_S);
+        self.dsp.fade(0.0, seconds);
         let ahead = match self.engine.running_time() {
             Some(now) => Duration::from_nanos(self.dsp.processed_running_time().saturating_sub(now)),
             None => Duration::ZERO,
         };
-        let wait = (Duration::from_secs_f64(FADE_S) + ahead + Duration::from_millis(20)).min(MAX_FADE_WAIT);
+        let wait = (Duration::from_secs_f64(seconds) + ahead + Duration::from_millis(20)).min(MAX_FADE_WAIT);
         let (token, internal) = (self.fade_token, self.internal.clone());
         tokio::spawn(async move {
             tokio::time::sleep(wait).await;
@@ -574,28 +613,68 @@ impl Player {
         });
     }
 
+    /// Drops the fade under way and what it was for: a newer command took over.
     fn cancel_fade(&mut self) {
         self.fade_token += 1;
+        self.after_fade = None;
     }
 
     fn on_internal(&mut self, message: Internal) {
         match message {
-            Internal::FadedOut(token) if token == self.fade_token && self.intent == Intent::Pause => {
-                if let Err(e) = self.engine.pause() {
+            Internal::FadedOut(token) if token == self.fade_token => self.finish_fade(),
+            Internal::FadedOut(_) => {}
+        }
+    }
+
+    /// Does what the fade to silence was for, now that it has been heard.
+    fn finish_fade(&mut self) {
+        let Some(action) = self.after_fade.take() else { return };
+        self.fade_token += 1;
+        match action {
+            AfterFade::Pause => {
+                if self.intent == Intent::Pause
+                    && let Err(e) = self.engine.pause()
+                {
                     log::error!("could not pause after fading out: {e}");
                 }
-                self.refresh_status();
             }
-            Internal::FadedOut(_) => {}
+            AfterFade::Seek(position) => self.finish_seek(position),
+            AfterFade::Load => {
+                if let Err(err) = self.open_current(self.intent == Intent::Play) {
+                    self.on_error(err);
+                }
+            }
+            AfterFade::Stop => {
+                if let Err(e) = self.engine.stop() {
+                    log::error!("could not stop after fading out: {e}");
+                }
+                self.engine_state = EngineState::Ready;
+            }
+        }
+        self.refresh_status();
+    }
+
+    /// The seek a fade was waiting for.
+    fn finish_seek(&mut self, position: Duration) {
+        if self.intent == Intent::Play {
+            // The seek's flush restarts the fade from silence; this brings
+            // the sound back up (the chain is at the fade-out's zero).
+            self.dsp.fade(1.0, FADE_S);
+        } else if let Err(e) = self.engine.pause() {
+            log::error!("could not pause before seeking: {e}");
+        }
+        if let Err(e) = self.engine.seek(position) {
+            log::debug!("could not seek after fading out: {e}");
+            self.seeking = false;
+            self.position = self.engine.position().unwrap_or(self.position);
+            self.emit_position();
         }
     }
 
     /// Moves playback to another output, reopening the current track at the
     /// same position.
     fn set_output(&mut self, output: Output) -> AppResult<()> {
-        let active = self.queue.current().is_some() && self.intent != Intent::Stop && self.error.is_none();
-        let position = if self.loading { self.position } else { self.engine.position().unwrap_or(self.position) };
-        let play = self.intent == Intent::Play;
+        let resume = self.resume_point();
         self.cancel_fade();
         self.engine.set_output(output)?;
         self.engine_state = EngineState::Ready;
@@ -604,29 +683,76 @@ impl Player {
         self.decoded = None;
         self.output = None;
         self.emit_signal();
-        if !active {
-            self.refresh_status();
-            return Ok(());
+        match resume {
+            Some(point) => self.resume_at(point),
+            None => {
+                self.refresh_status();
+                Ok(())
+            }
         }
+    }
+
+    fn renegotiate_output(&mut self) -> AppResult<()> {
+        let integer = self.output.as_ref().is_some_and(|f| !f.float);
+        match self.resume_point() {
+            Some(point) if integer => self.resume_at(point),
+            _ => Ok(()),
+        }
+    }
+
+    /// Where to pick up after the pipeline is rebuilt (position, and whether
+    /// to play); `None` when nothing is loaded.
+    fn resume_point(&self) -> Option<(Duration, bool)> {
+        let active = self.queue.current().is_some() && self.intent != Intent::Stop && self.error.is_none();
+        active.then_some((self.heard_position(), self.intent == Intent::Play))
+    }
+
+    /// The position in the current track: the engine's, unless a track is
+    /// opening or a seek is under way (it may still be fading out, with the
+    /// engine at the old position), when it is the one asked for.
+    fn heard_position(&self) -> Duration {
+        if self.loading || self.seeking { self.position } else { self.engine.position().unwrap_or(self.position) }
+    }
+
+    /// Reopens the current track at a point from [`Self::resume_point`].
+    fn resume_at(&mut self, (position, play): (Duration, bool)) -> AppResult<()> {
         self.failures = 0;
         if position > Duration::from_secs(1) {
             // Open paused and seek first, so the start of the track is
-            // never heard on the new output.
-            return self.load_current_at(false, Some((position, play)));
+            // never heard.
+            return self.switch_track(false, Some((position, play)));
         }
-        self.load_current(play)
+        self.switch_track(play, None)
     }
 
+    /// Stops for the user: a track being heard fades out first.
     fn stop(&mut self) -> AppResult<()> {
+        if !self.fade_first() {
+            return self.stop_now();
+        }
+        self.fade_out_then(AfterFade::Stop);
+        self.show_stopped();
+        Ok(())
+    }
+
+    /// Stops right away (the queue ran out, or nothing is audible).
+    fn stop_now(&mut self) -> AppResult<()> {
+        self.cancel_fade();
         self.engine.stop()?;
         self.engine_state = EngineState::Ready;
+        self.show_stopped();
+        Ok(())
+    }
+
+    fn show_stopped(&mut self) {
         self.intent = Intent::Stop;
         self.loading = false;
         self.seeking = false;
+        self.pending_seek = None;
+        self.play_after_seek = false;
         self.position = Duration::ZERO;
         self.emit_position();
         self.refresh_status();
-        Ok(())
     }
 
     fn next(&mut self) -> AppResult<()> {
@@ -639,7 +765,10 @@ impl Player {
     }
 
     fn previous(&mut self) -> AppResult<()> {
-        let loaded = !self.loading && matches!(self.engine_state, EngineState::Paused | EngineState::Playing);
+        // Stopped (perhaps still fading out) counts as not loaded.
+        let loaded = self.intent != Intent::Stop
+            && !self.loading
+            && matches!(self.engine_state, EngineState::Paused | EngineState::Playing);
         if loaded && self.position > RESTART_THRESHOLD {
             return self.seek(Duration::ZERO);
         }
@@ -651,12 +780,19 @@ impl Player {
         self.switch_to_current()
     }
 
+    /// Seeks; while the track is being heard it fades out first. The UI
+    /// shows the new position at once.
     fn seek(&mut self, position: Duration) -> AppResult<()> {
-        if self.loading || !matches!(self.engine_state, EngineState::Paused | EngineState::Playing) {
+        let loaded = matches!(self.engine_state, EngineState::Paused | EngineState::Playing);
+        if self.loading || !loaded || self.intent == Intent::Stop {
             return Err(AppError::InvalidArgument("nothing is playing".into()));
         }
         let position = self.duration.map_or(position, |d| position.min(d));
-        self.engine.seek(position)?;
+        if self.fade_first() {
+            self.fade_out_then(AfterFade::Seek(position));
+        } else {
+            self.engine.seek(position)?;
+        }
         self.seeking = true;
         self.position = position;
         self.emit_position();
@@ -674,7 +810,7 @@ impl Player {
         if mode == InsertMode::Replace || !had_current {
             self.failures = 0;
             self.direction = Direction::Forward;
-            return self.load_current(true);
+            return self.switch_track(true, None);
         }
         self.update_next();
         Ok(())
@@ -691,15 +827,9 @@ impl Player {
         if self.queue.current().is_some() {
             return self.switch_to_current();
         }
-        self.engine.stop()?;
-        self.engine_state = EngineState::Ready;
-        self.intent = Intent::Stop;
-        self.position = Duration::ZERO;
         self.duration = None;
         self.emit_track();
-        self.emit_position();
-        self.refresh_status();
-        Ok(())
+        self.stop()
     }
 
     /// After the current entry changed: load it if something was playing or
@@ -716,8 +846,24 @@ impl Player {
                 self.refresh_status();
                 Ok(())
             }
-            intent => self.load_current(intent == Intent::Play),
+            intent => self.switch_track(intent == Intent::Play, None),
         }
+    }
+
+    /// Opens the current entry for the user's command, as
+    /// [`Self::load_current_at`] does. A track being heard fades out first;
+    /// the UI shows the new one at once.
+    fn switch_track(&mut self, play: bool, seek: Option<(Duration, bool)>) -> AppResult<()> {
+        if self.queue.current().is_none() {
+            return self.stop();
+        }
+        if !self.fade_first() {
+            return self.load_current_at(play, seek);
+        }
+        self.begin_load(play, seek);
+        self.refresh_status();
+        self.fade_out_then(AfterFade::Load);
+        Ok(())
     }
 
     fn load_current(&mut self, play: bool) -> AppResult<()> {
@@ -737,27 +883,45 @@ impl Player {
     /// [`Self::load_current_at`] without the error handling: returns why the
     /// current entry could not be opened.
     fn try_load_current(&mut self, play: bool, seek: Option<(Duration, bool)>) -> Result<(), EngineError> {
+        self.begin_load(play, seek);
+        self.open_current(play)
+    }
+
+    /// Shows the current entry as the one opening: everything but the
+    /// pipeline, which [`Self::open_current`] then opens.
+    fn begin_load(&mut self, play: bool, seek: Option<(Duration, bool)>) {
         self.pending_seek = seek;
         self.play_after_seek = false;
         let Some(track) = self.queue.current().map(|e| e.track.clone()) else {
-            return Ok(());
+            return;
         };
-        let uri = filesystem::path_to_uri(&track.path).map_err(|e| EngineError {
-            kind: EngineErrorKind::NotFound,
-            message: e.to_string(),
-            detail: None,
-            uri: None,
-        })?;
         self.intent = if play { Intent::Play } else { Intent::Pause };
-        self.cancel_fade();
-        self.dsp.fade(1.0, 0.0);
         self.loading = true;
         self.seeking = false;
         self.position = Duration::ZERO;
         self.duration = known_duration(&track);
         self.decoded = None;
         self.output = None;
+        self.emit_track();
+        self.emit_queue_state();
+        self.emit_position();
+        self.emit_signal();
+    }
 
+    /// Opens the current entry in the engine, playing if `play`.
+    fn open_current(&mut self, play: bool) -> Result<(), EngineError> {
+        let Some(track) = self.queue.current().map(|e| e.track.clone()) else {
+            return Ok(());
+        };
+        // No fade back to full level here: the engine's reset tells the
+        // processor to start the new stream from rest, at full level.
+        self.cancel_fade();
+        let uri = filesystem::path_to_uri(&track.path).map_err(|e| EngineError {
+            kind: EngineErrorKind::NotFound,
+            message: e.to_string(),
+            detail: None,
+            uri: None,
+        })?;
         // Checked here rather than left to GStreamer: a missing file fails
         // the pipeline's state change, and costs a reset to recover from.
         let loaded = if track.path.exists() {
@@ -771,10 +935,6 @@ impl Player {
             })
         };
         self.engine_state = EngineState::Ready;
-        self.emit_track();
-        self.emit_queue_state();
-        self.emit_position();
-        self.emit_signal();
         loaded?;
         self.refresh_status();
         Ok(())
@@ -796,6 +956,9 @@ impl Player {
     // ── engine events ───────────────────────────────────────────────────────
 
     fn on_engine(&mut self, event: EngineEvent) {
+        if self.after_fade.is_some_and(|a| a != AfterFade::Pause) && self.while_fading(&event) {
+            return;
+        }
         match event {
             EngineEvent::StateChanged(state) => {
                 self.engine_state = state;
@@ -880,6 +1043,48 @@ impl Player {
         }
     }
 
+    /// Engine events arriving while a seek, skip or stop fades out. Returns
+    /// whether the event was dealt with; the rest are handled as usual.
+    fn while_fading(&mut self, event: &EngineEvent) -> bool {
+        let seek = matches!(self.after_fade, Some(AfterFade::Seek(_)));
+        match event {
+            // The stream ran out before the fade did: nothing is audible any
+            // more, so do what was waiting now.
+            EngineEvent::EndOfStream => {
+                self.finish_fade();
+                true
+            }
+            // The stream being left broke: release it, then open or stop.
+            EngineEvent::Error(_) if !seek => {
+                self.engine.recover();
+                self.engine_state = EngineState::Null;
+                self.finish_fade();
+                true
+            }
+            EngineEvent::Error(_) => {
+                self.cancel_fade();
+                false
+            }
+            // The next track began gaplessly: the seek was meant for the one
+            // before it, so it is dropped (a pause asked for meanwhile stays).
+            EngineEvent::StreamStarted { gapless: true, .. } if seek => {
+                self.seeking = false;
+                if self.intent == Intent::Play {
+                    self.cancel_fade();
+                    self.dsp.fade(1.0, FADE_S);
+                } else {
+                    self.after_fade = Some(AfterFade::Pause);
+                }
+                false
+            }
+            // The seek has not been issued yet: this is not its completion.
+            EngineEvent::AsyncDone if seek => true,
+            _ if seek => false,
+            // Anything else describes the stream being left.
+            _ => true,
+        }
+    }
+
     fn on_gapless_switch(&mut self, uri: &str) {
         let expected = self.queue.peek_auto_next().and_then(|e| filesystem::path_to_uri(&e.track.path).ok());
         if expected.as_deref() == Some(uri) {
@@ -904,24 +1109,28 @@ impl Player {
         self.emit_track();
         self.emit_queue_state();
         self.emit_position();
+        // It may have ended a seek that was still fading out.
+        self.refresh_status();
     }
 
     /// End of stream is only reached when no gapless continuation was queued.
     fn on_end_of_stream(&mut self) {
         if self.queue.peek_auto_next().is_some() {
-            // Repeat or the queue changed after the continuation point.
+            // Repeat or the queue changed after the continuation point. A
+            // soft pause still fading out when the track ended stays paused.
             self.queue.advance_auto();
-            if let Err(e) = self.load_current(true) {
+            if let Err(e) = self.load_current(self.intent == Intent::Play) {
                 log::error!("could not continue after end of stream: {e}");
             }
             return;
         }
-        if let Err(e) = self.stop() {
+        if let Err(e) = self.stop_now() {
             log::error!("could not stop at end of queue: {e}");
         }
     }
 
     fn on_error(&mut self, err: EngineError) {
+        self.cancel_fade();
         self.loading = false;
         self.seeking = false;
         self.pending_seek = None;
@@ -964,10 +1173,12 @@ impl Player {
             let moved = match self.direction {
                 Direction::Forward => self.queue.advance().is_some(),
                 // Nothing playable further back: go forward from here.
-                Direction::Backward => self.queue.retreat().is_some() || {
-                    self.direction = Direction::Forward;
-                    self.queue.advance().is_some()
-                },
+                Direction::Backward => {
+                    self.queue.retreat().is_some() || {
+                        self.direction = Direction::Forward;
+                        self.queue.advance().is_some()
+                    }
+                }
             };
             if !moved {
                 return false;
@@ -1358,7 +1569,8 @@ mod tests {
     async fn a_file_that_fails_to_open_does_not_break_the_next_one() {
         use std::os::unix::fs::PermissionsExt;
         let mut h = harness().await;
-        let (a, locked, c) = (h.dir.path().join("a.flac"), h.dir.path().join("locked.flac"), h.dir.path().join("c.flac"));
+        let (a, locked, c) =
+            (h.dir.path().join("a.flac"), h.dir.path().join("locked.flac"), h.dir.path().join("c.flac"));
         write_flac(&a, 4.0, "First");
         write_flac(&locked, 1.0, "Locked");
         write_flac(&c, 4.0, "Third");
@@ -1601,6 +1813,206 @@ mod tests {
         h.player.command(PlayerCommand::SetOutput(Box::new(Output::fake(true)))).await.unwrap();
         let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
         assert!(!statuses(&events).contains(&PlaybackStatus::Paused), "{:?}", statuses(&events));
+        let position = h.player.snapshot().await.unwrap().position_ms;
+        assert!(position >= 1400, "resumed at {position} ms");
+    }
+
+    /// A buffer a recording output rendered.
+    #[derive(Debug, Clone, Copy)]
+    struct Buffer {
+        peak: f64,
+        /// Peak of its last 2 ms: where a fade inside the buffer ended up.
+        tail: f64,
+        /// Stream time (ms).
+        pts: u64,
+    }
+
+    /// What a recording output rendered, and when; `None` marks a flush.
+    type Rendered = Arc<std::sync::Mutex<Vec<(std::time::Instant, Option<Buffer>)>>>;
+
+    /// A fake output that records each buffer it renders, and each flush.
+    fn recording_output() -> (Output, Rendered) {
+        use gstreamer::prelude::*;
+        let log: Rendered = Arc::default();
+        let sink = gstreamer::ElementFactory::make("fakesink")
+            .name("matrixplayer-output")
+            .property("sync", true)
+            .property("signal-handoffs", true)
+            .build()
+            .unwrap();
+        let rendered = log.clone();
+        sink.connect("handoff", false, move |args| {
+            let buffer = args[1].get::<gstreamer::Buffer>().ok()?;
+            let pts = buffer.pts().map_or(0, |t| t.mseconds());
+            let map = buffer.map_readable().ok()?;
+            let samples: Vec<f64> =
+                map.as_slice().chunks_exact(8).map(|b| f64::from_ne_bytes(b.try_into().unwrap()).abs()).collect();
+            let peak = samples.iter().copied().fold(0.0, f64::max);
+            // 2 ms of stereo 44.1 kHz.
+            let tail = samples[samples.len().saturating_sub(176)..].iter().copied().fold(0.0, f64::max);
+            rendered.lock().unwrap().push((std::time::Instant::now(), Some(Buffer { peak, tail, pts })));
+            None
+        });
+        let flushes = log.clone();
+        sink.static_pad("sink").unwrap().add_probe(gstreamer::PadProbeType::EVENT_FLUSH, move |_, info| {
+            if let Some(gstreamer::EventView::FlushStop(_)) = info.event().map(|e| e.view()) {
+                flushes.lock().unwrap().push((std::time::Instant::now(), None));
+            }
+            gstreamer::PadProbeReturn::Ok
+        });
+        (Output { sink, backend: crate::audio::OutputBackend::Auto, device: None }, log)
+    }
+
+    /// A player on a recording output, with the default DSP settings (soft
+    /// fades on) and the volume at 100%, playing a 6 s tone.
+    async fn recording_player() -> (PlayerHandle, broadcast::Receiver<PlayerEvent>, Rendered, tempfile::TempDir) {
+        gstreamer::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (output, rendered) = recording_output();
+        let settings = PlayerSettings {
+            volume: 1.0,
+            muted: false,
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            gapless: true,
+            output_device: None,
+        };
+        let (player, service) = PlayerHandle::new(Database::in_memory().await.unwrap(), settings, output).unwrap();
+        tokio::spawn(service);
+        player.dsp().apply(&crate::dsp::settings::DspSettings::default());
+        let mut events = player.subscribe();
+        let artwork = ArtworkStore::new(dir.path().join("art")).unwrap();
+        let (a, b) = (dir.path().join("a.flac"), dir.path().join("b.flac"));
+        write_flac(&a, 6.0, "First");
+        write_flac(&b, 6.0, "Second");
+        let tracks = [a, b].iter().map(|p| Arc::new(TrackInfo::load(p, &artwork))).collect();
+        player.command(PlayerCommand::Insert { tracks, mode: InsertMode::Replace, start: 0 }).await.unwrap();
+        wait_for(&mut events, is_status(PlaybackStatus::Playing)).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        (player, events, rendered, dir)
+    }
+
+    fn steady_level(rendered: &Rendered) -> f64 {
+        rendered.lock().unwrap().iter().filter_map(|(_, r)| r.map(|b| b.peak)).fold(0.0, f64::max)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seek_fades_out_then_comes_back_at_full_level() {
+        let (player, mut events, rendered, _dir) = recording_player().await;
+        let steady = steady_level(&rendered);
+        let before = rendered.lock().unwrap().len();
+        player.command(PlayerCommand::Seek(Duration::from_secs(3))).await.unwrap();
+        assert_eq!(player.snapshot().await.unwrap().position_ms, 3000, "the new position shows at once");
+        wait_for(&mut events, is_status(PlaybackStatus::Playing)).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        let log = rendered.lock().unwrap();
+        let after = &log[before..];
+        let flush = after.iter().position(|(_, r)| r.is_none()).expect("the seek flushed the output");
+        assert_eq!(after.iter().filter(|(_, r)| r.is_none()).count(), 1);
+        let last = after[..flush].iter().rev().find_map(|(_, r)| *r).unwrap();
+        assert!(last.tail < steady * 0.01, "the output was cut at {:.3} of {steady:.3}", last.tail);
+        let resumed: Vec<_> = after[flush..].iter().filter_map(|(t, r)| r.map(|b| (*t, b))).collect();
+        assert!(resumed[0].1.pts >= 2990, "plays from the new position: {} ms", resumed[0].1.pts);
+        assert!(resumed[0].1.peak < steady * 0.9, "fades in rather than starting at full level");
+        let back = resumed.iter().position(|(_, b)| b.peak > steady * 0.99).expect("back at full level");
+        assert!(resumed[back].0 - after[flush].0 < Duration::from_millis(400), "full level again after the fade-in");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_burst_of_seeks_performs_only_the_last() {
+        let (player, mut events, rendered, _dir) = recording_player().await;
+        let before = rendered.lock().unwrap().len();
+        for ms in [1500, 2500, 3500, 4000] {
+            player.command(PlayerCommand::Seek(Duration::from_millis(ms))).await.unwrap();
+        }
+        let statuses_seen = statuses(&wait_for(&mut events, is_status(PlaybackStatus::Playing)).await);
+        assert_eq!(statuses_seen, [PlaybackStatus::Seeking, PlaybackStatus::Playing]);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let log = rendered.lock().unwrap();
+        let after = &log[before..];
+        assert_eq!(after.iter().filter(|(_, r)| r.is_none()).count(), 1, "one flush for the whole burst");
+        let flush = after.iter().position(|(_, r)| r.is_none()).unwrap();
+        let first_pts = after[flush..].iter().find_map(|(_, r)| r.map(|b| b.pts)).unwrap();
+        assert!((3990..4100).contains(&first_pts), "played from the last target: {first_pts} ms");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seek_still_fading_out_survives_an_output_switch() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 5.0, "Long");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        h.player.command(PlayerCommand::Seek(Duration::from_secs(3))).await.unwrap();
+        h.player.command(PlayerCommand::SetOutput(Box::new(Output::fake(true)))).await.unwrap();
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        let position = h.player.snapshot().await.unwrap().position_ms;
+        assert!(position >= 2900, "reopened at {position} ms, not where the seek was going");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn previous_while_a_stop_fades_out_is_not_an_error() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 5.0, "Only");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        h.player.command(PlayerCommand::Stop).await.unwrap();
+        h.player.command(PlayerCommand::Previous).await.expect("nothing to go back to is not an error");
+        assert_eq!(h.player.snapshot().await.unwrap().status, PlaybackStatus::Stopped);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skipping_fades_out_the_track_being_left() {
+        let (player, mut events, rendered, _dir) = recording_player().await;
+        let steady = steady_level(&rendered);
+        let before = rendered.lock().unwrap().len();
+        player.command(PlayerCommand::Next).await.unwrap();
+        assert_eq!(player.snapshot().await.unwrap().track.unwrap().metadata.title, "Second", "shown at once");
+        wait_for(&mut events, is_status(PlaybackStatus::Playing)).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        let log = rendered.lock().unwrap();
+        let played: Vec<_> = log[before..].iter().filter_map(|(_, r)| *r).collect();
+        // The second track starts over at stream time zero.
+        let start = played.windows(2).position(|w| w[1].pts < w[0].pts).expect("the next track played") + 1;
+        assert!(played[start - 1].tail < steady * 0.01, "the first track was cut at {:.3}", played[start - 1].tail);
+        assert!(played[start..].iter().any(|b| b.peak > steady * 0.99), "the next track plays at full level");
+    }
+
+    /// An output that takes only 16-bit samples, like many ALSA devices.
+    fn integer_output() -> Output {
+        use gstreamer::prelude::*;
+        let bin = gstreamer::parse::bin_from_description(
+            "capsfilter caps=audio/x-raw,format=S16LE ! fakesink sync=true",
+            true,
+        )
+        .unwrap();
+        Output { sink: bin.upcast(), backend: crate::audio::OutputBackend::Auto, device: None }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn renegotiating_reopens_integer_outputs_where_they_were() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("a.flac");
+        write_flac(&a, 5.0, "Long");
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+
+        // A float output never dithers: nothing to reopen.
+        h.player.command(PlayerCommand::RenegotiateOutput).await.unwrap();
+        assert_eq!(h.player.snapshot().await.unwrap().status, PlaybackStatus::Playing);
+
+        h.player.command(PlayerCommand::SetOutput(Box::new(integer_output()))).await.unwrap();
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Position { position_ms, .. } if *position_ms >= 1500))
+            .await;
+        h.player.command(PlayerCommand::RenegotiateOutput).await.unwrap();
+        let events = wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        assert!(statuses(&events).contains(&PlaybackStatus::Loading), "reopened: {:?}", statuses(&events));
         let position = h.player.snapshot().await.unwrap().position_ms;
         assert!(position >= 1400, "resumed at {position} ms");
     }

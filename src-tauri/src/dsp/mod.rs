@@ -5,11 +5,17 @@
 //! changes. All processing runs on 64-bit float samples:
 //!
 //! ```text
-//! playsink queue ─ audioconvert ─ F64 ─ processor ─ volume ─ audioconvert ─ output sink
+//! playsink queue ─ audioconvert ─ F64 ─ processor ─ audioresample ─ audioconvert ─ output sink
 //!                                        │ ReplayGain, preamp, EQ, balance,
-//!                                        │ width, crossfeed, fades, limiter
+//!                                        │ width, crossfeed, fades, limiter,
+//!                                        │ volume
 //!                                        └─ analysis tap (spectrum, meters)
 //! ```
+//!
+//! Mono streams are upmixed to stereo on the way in (at unity per channel),
+//! so balance, width and crossfeed work on them too. The resampler only
+//! works when the output cannot take the stream's rate; PipeWire and
+//! PulseAudio take every rate, so there it negotiates passthrough.
 //!
 //! It sits *after* playsink's internal queue on purpose. As an `audio-filter`
 //! it would run in front of that queue, about 1.3 s ahead of the speakers:
@@ -23,6 +29,11 @@
 
 pub mod analysis;
 pub mod biquad;
+pub mod crossfeed;
+pub mod eq;
+pub mod graphic;
+pub mod limiter;
+pub mod matched;
 pub mod processor;
 pub mod service;
 pub mod settings;
@@ -35,16 +46,22 @@ use gstreamer_audio as gst_audio;
 use tokio::sync::broadcast;
 
 use self::analysis::AnalysisFrame;
-use self::processor::{DspStatus, Params, Processor, Shared};
-use self::settings::DspSettings;
+use self::graphic::{EqResponse, GraphicCache, curve_response};
+use self::processor::{DspStatus, EqSpec, Params, Processor, Shared};
+use self::settings::{DspSettings, EqCurve};
 use crate::error::AppResult;
+
+/// Filter memories below this are flushed to zero, so a decaying tail never
+/// drops into subnormal numbers, which are very slow on most CPUs.
+pub(crate) const DENORMAL: f64 = 1e-30;
 
 pub struct DspChain {
     bin: gst::Bin,
-    volume: gst::Element,
     to_output: gst::Element,
     sink: Mutex<Option<gst::Element>>,
     control: Arc<DspControl>,
+    /// Volume (linear) and mute as last set; the processor hears 0 when muted.
+    volume: Mutex<(f64, bool)>,
 }
 
 impl DspChain {
@@ -56,16 +73,22 @@ impl DspChain {
             .name("dsp-f64")
             .property(
                 "caps",
-                gst_audio::AudioCapsBuilder::new_interleaved().format(gst_audio::AudioFormat::F64le).build(),
+                gst_audio::AudioCapsBuilder::new_interleaved()
+                    .format(gst_audio::AudioFormat::F64le)
+                    .channels_range(2..=64)
+                    .build(),
             )
             .build()?;
-        let volume = gst::ElementFactory::make("volume").name("dsp-volume").build()?;
+        // Volume is applied by the processor, smoothed; a `volume` element
+        // would step the gain at buffer boundaries.
+        let resample =
+            gst::ElementFactory::make("audioresample").name("dsp-resample").property("quality", 10i32).build()?;
         // Converts back to whatever the output accepts. Dither is applied only
         // if asked for, and only matters when the device takes fewer bits.
         let to_output = gst::ElementFactory::make("audioconvert").name("dsp-out").build()?;
         to_output.set_property_from_str("dithering", "none");
 
-        let chain = [&to_float, &float_caps, &volume, &to_output];
+        let chain = [&to_float, &float_caps, &resample, &to_output];
         bin.add_many(chain)?;
         gst::Element::link_many(chain)?;
 
@@ -82,9 +105,15 @@ impl DspChain {
                 let _ = status.send(s);
             }));
         }
-        let control =
-            Arc::new(DspControl { shared, to_output: to_output.clone(), analysis, status, settings: Mutex::default() });
-        Ok(Self { bin, volume, to_output, sink: Mutex::new(None), control })
+        let control = Arc::new(DspControl {
+            shared,
+            to_output: to_output.clone(),
+            analysis,
+            status,
+            settings: Mutex::default(),
+            response_solver: Mutex::default(),
+        });
+        Ok(Self { bin, to_output, sink: Mutex::new(None), control, volume: Mutex::new((1.0, false)) })
     }
 
     /// Makes `sink` the chain's output, replacing (and closing) the previous
@@ -118,11 +147,20 @@ impl DspChain {
 
     /// Sets the playback gain as a linear amplitude factor (1.0 = unity).
     pub fn set_volume(&self, linear: f64) {
-        self.volume.set_property("volume", linear.clamp(0.0, 1.0));
+        let mut volume = self.volume.lock().unwrap();
+        volume.0 = linear.clamp(0.0, 1.0);
+        self.control.shared.set_volume(if volume.1 { 0.0 } else { volume.0 });
     }
 
     pub fn set_muted(&self, muted: bool) {
-        self.volume.set_property("mute", muted);
+        let mut volume = self.volume.lock().unwrap();
+        volume.1 = muted;
+        self.control.shared.set_volume(if muted { 0.0 } else { volume.0 });
+    }
+
+    /// The pipeline was stopped or reset: the next stream starts from rest.
+    pub fn restart(&self) {
+        self.control.shared.restart();
     }
 }
 
@@ -178,6 +216,8 @@ pub struct DspControl {
     analysis: broadcast::Sender<AnalysisFrame>,
     status: broadcast::Sender<DspStatus>,
     settings: Mutex<DspSettings>,
+    /// The graphic EQ solver for drawing responses (the processor has its own).
+    response_solver: Mutex<GraphicCache>,
 }
 
 impl DspControl {
@@ -185,12 +225,12 @@ impl DspControl {
     pub fn apply(&self, settings: &DspSettings) {
         let active = settings.eq_active();
         self.shared.set_params(Params {
-            filters: if active { settings.curve().filters() } else { Vec::new() },
+            eq: active.then(|| EqSpec { slot: settings.slot, curve: settings.curve().clone() }),
             preamp_db: if active { settings.preamp_db } else { 0.0 },
             auto_preamp_allowance_db: (active && settings.auto_preamp).then_some(settings.auto_preamp_allowance_db),
             balance: settings.balance,
             width: settings.width,
-            crossfeed: settings.crossfeed,
+            crossfeed: settings.crossfeed.then_some(settings.crossfeed_preset),
             replay_gain: settings.replay_gain,
             replay_gain_preamp_db: settings.replay_gain_preamp_db,
             replay_gain_fallback_db: settings.replay_gain_fallback_db,
@@ -203,6 +243,13 @@ impl DspControl {
 
     pub fn settings(&self) -> DspSettings {
         self.settings.lock().unwrap().clone()
+    }
+
+    /// `curve`'s response at `rate` (Hz), as the processor would play it.
+    pub fn eq_response(&self, mut curve: EqCurve, rate: u32, freqs: &[f64]) -> EqResponse {
+        curve.sanitize();
+        let rate = f64::from(rate.clamp(8_000, 768_000));
+        curve_response(&curve, rate, freqs, &mut self.response_solver.lock().unwrap())
     }
 
     /// Whether shuffle is on, for "Smart" ReplayGain.

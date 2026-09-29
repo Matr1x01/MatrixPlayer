@@ -4,7 +4,7 @@
 import { backendLabel, codecLabel, formatStreamCompact, khz } from '@/features/player/format';
 import { activeCurve, useDsp } from '@/stores/dsp';
 import { usePlayer } from '@/stores/player';
-import type { DspSettings, DspStatus } from '@/types/dsp';
+import type { CrossfeedPreset, DspSettings, DspStatus } from '@/types/dsp';
 
 import { formatGain } from './eqMath';
 
@@ -25,6 +25,17 @@ export const STAGE_DOT: Record<StageState, string> = {
 };
 
 const RG_MODE: Record<DspSettings['replayGain'], string> = { off: 'Off', track: 'Track', album: 'Album', smart: 'Smart' };
+
+/** bs2b's presets: the cross-path cut-off and how far below the direct sound it is. */
+export const CROSSFEED_PRESETS: { value: CrossfeedPreset; label: string; detail: string }[] = [
+  { value: 'default', label: 'Default', detail: '700 Hz · 4.5 dB' },
+  { value: 'chuMoy', label: 'Chu Moy', detail: '700 Hz · 6 dB' },
+  { value: 'janMeier', label: 'Jan Meier', detail: '650 Hz · 9.5 dB' },
+];
+
+export function crossfeedDetail(preset: CrossfeedPreset): string {
+  return CROSSFEED_PRESETS.find((p) => p.value === preset)?.detail ?? '';
+}
 
 export function replayGainText(settings: DspSettings, status: DspStatus, playing: boolean): string {
   if (settings.replayGain === 'off') return 'Off';
@@ -99,13 +110,13 @@ export function useChain(): ChainStage[] {
       {
         key: 'crossfeed',
         name: 'Crossfeed',
-        value: settings.crossfeed ? 'On · 700 Hz' : 'Bypassed',
+        value: settings.crossfeed ? `On · ${crossfeedDetail(settings.crossfeedPreset)}` : 'Bypassed',
         state: settings.crossfeed ? 'active' : 'off',
       },
       {
         key: 'limiter',
         name: 'Limiter',
-        value: dspStatus.limiting ? 'Limiting' : 'Idle · −0.1 dB',
+        value: dspStatus.limiting ? 'Limiting' : 'Idle · −0.5 dBTP',
         state: dspStatus.limiting ? 'warn' : 'on',
       },
     );

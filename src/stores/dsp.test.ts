@@ -31,6 +31,7 @@ const settings: DspSettings = {
   balance: 0,
   width: 1,
   crossfeed: false,
+  crossfeedPreset: 'default',
   replayGain: 'album',
   replayGainPreampDb: 0,
   replayGainFallbackDb: 0,

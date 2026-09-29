@@ -7,8 +7,9 @@ use tokio::sync::oneshot;
 
 use crate::audio::output::{self, OutputBackend, OutputDevice};
 use crate::database::settings;
+use crate::dsp::graphic::EqResponse;
 use crate::dsp::service::DspState;
-use crate::dsp::settings::DspSettings;
+use crate::dsp::settings::{DspSettings, EqCurve};
 use crate::error::{AppError, AppResult};
 use crate::player::{OUTPUT_DEVICE_KEY, PlayerCommand};
 use crate::state::AppState;
@@ -20,14 +21,30 @@ pub fn dsp_state(state: State<'_, AppState>) -> DspState {
 
 /// Applies new settings right away. Returns them as applied (clamped).
 #[tauri::command]
-pub fn dsp_update(state: State<'_, AppState>, settings: DspSettings) -> DspSettings {
-    state.dsp.update(settings)
+pub async fn dsp_update(state: State<'_, AppState>, settings: DspSettings) -> AppResult<DspSettings> {
+    let before = state.dsp.control().settings();
+    let applied = state.dsp.update(settings);
+    apply_output_settings(&state, &before, &applied).await?;
+    Ok(applied)
 }
 
 /// Resets playback processing to its defaults; the equalizer is kept.
 #[tauri::command]
-pub fn dsp_restore_defaults(state: State<'_, AppState>) -> DspSettings {
-    state.dsp.restore_defaults()
+pub async fn dsp_restore_defaults(state: State<'_, AppState>) -> AppResult<DspSettings> {
+    let before = state.dsp.control().settings();
+    let applied = state.dsp.restore_defaults();
+    apply_output_settings(&state, &before, &applied).await?;
+    Ok(applied)
+}
+
+/// Dither is set up when the output's format is negotiated, so a change is
+/// only heard once the track is reopened (which the player does only for
+/// outputs that take integer samples).
+async fn apply_output_settings(state: &AppState, before: &DspSettings, after: &DspSettings) -> AppResult<()> {
+    if before.dither == after.dither {
+        return Ok(());
+    }
+    state.player.command(PlayerCommand::RenegotiateOutput).await
 }
 
 #[tauri::command]
@@ -69,6 +86,22 @@ pub async fn dsp_import_presets(app: AppHandle, state: State<'_, AppState>) -> A
     let Some(file) = picked.await.map_err(|_| AppError::PlayerUnavailable)? else { return Ok(None) };
     let path = file.into_path().map_err(|_| AppError::InvalidArgument("not a local file".into()))?;
     state.dsp.import_presets(&path).await.map(Some)
+}
+
+/// The frequency response of `curve` as the core plays it at `rate`, at
+/// each of `freqs` (Hz), for drawing. Graphic bands are solved as in
+/// playback, so the curve on screen is the one heard.
+#[tauri::command]
+pub async fn dsp_eq_response(
+    state: State<'_, AppState>,
+    curve: EqCurve,
+    rate: u32,
+    freqs: Vec<f64>,
+) -> AppResult<EqResponse> {
+    if freqs.len() > 4096 {
+        return Err(AppError::InvalidArgument("too many frequencies".into()));
+    }
+    Ok(state.dsp.control().eq_response(curve, rate, &freqs))
 }
 
 /// Starts or stops the `audio-analysis` event stream (visualizer, meters).

@@ -318,6 +318,9 @@ fn describe_stream(sink: &gst::Element) {
             .field("media.category", "Playback")
             .field("application.name", "MatrixPlayer")
             .field("application.icon-name", "matrixplayer")
+            // When PipeWire must resample (the device is locked to another
+            // rate), use its best quality rather than the default of 4.
+            .field("resample.quality", 10i32)
             .build();
         sink.set_property("stream-properties", props);
     }

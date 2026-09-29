@@ -5,6 +5,12 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react';
 
+import { Segmented } from '@/components/ui/Segmented';
+import { patchDsp } from '@/stores/dsp';
+import type { CrossfeedPreset } from '@/types/dsp';
+
+import { CROSSFEED_PRESETS } from './chain';
+
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 const snap = (v: number, step: number) => Math.round(v / step) * step;
 
@@ -308,6 +314,19 @@ export function ValueField({
         onStep(e.deltaY < 0 ? 1 : -1, e.shiftKey);
         setText(null);
       }}
+    />
+  );
+}
+
+/** bs2b's crossfeed presets, next to the crossfeed switch. */
+export function CrossfeedPresets({ value }: { value: CrossfeedPreset }) {
+  return (
+    <Segmented<CrossfeedPreset>
+      label="Crossfeed preset"
+      size="sm"
+      value={value}
+      onChange={(crossfeedPreset) => patchDsp({ crossfeedPreset })}
+      options={CROSSFEED_PRESETS.map(({ value, label, detail }) => ({ value, label, tip: detail }))}
     />
   );
 }
