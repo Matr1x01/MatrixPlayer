@@ -7,6 +7,8 @@ import { Segmented } from '@/components/ui/Segmented';
 import { Toggle } from '@/components/ui/Toggle';
 import { dspApi } from '@/services/ipc';
 import { activeCurve, applyState, patchCurve, patchDsp, setDsp, useDsp } from '@/stores/dsp';
+import { useNavigation } from '@/stores/navigation';
+import { usePlayer } from '@/stores/player';
 import { run, showToast } from '@/stores/toasts';
 import type { DspSettings, EqBand, EqCurve, EqMode, FilterKind, Preset } from '@/types/dsp';
 
@@ -301,6 +303,7 @@ export function EqualizerView() {
         </div>
       </div>
 
+      <BitPerfectNotice />
       <div className="eq-body">
         <div className="flex min-w-0 flex-col gap-3">
           <ResponseGraph
@@ -651,5 +654,22 @@ function GraphicBands({ curve, onChange }: { curve: EqCurve; onChange: (index: n
         />
       ))}
     </section>
+  );
+}
+
+/** While bit-perfect playback is on, the equalizer is out of the path. */
+function BitPerfectNotice() {
+  const bitPerfect = usePlayer((s) => s.signal.bitPerfect);
+  const navigate = useNavigation((s) => s.navigate);
+  if (!bitPerfect) return null;
+  return (
+    <div className="bp-notice" role="status">
+      <Icon name="info" size={15} />
+      <span>Bit-perfect playback is on, so the equalizer and tone controls are bypassed. Changes here apply once it is off.</span>
+      <button type="button" className="btn gh sm" onClick={() => navigate('dsp')}>
+        Audio / DSP
+        <Icon name="chevR" size={13} />
+      </button>
+    </div>
   );
 }

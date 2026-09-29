@@ -170,6 +170,20 @@
   }
 
   /* ── Equalizer board ───────────────────────────────────────────────── */
+  .bp-notice {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 28px 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--acm);
+    border-radius: 8px;
+    color: var(--tx2);
+    font-size: 12px;
+  }
+  .bp-notice > svg { flex: none; color: var(--ac); }
+  .bp-notice > span { flex: 1; min-width: 0; }
   .eq-header { align-items: flex-start; flex-wrap: wrap; padding-top: 18px; padding-bottom: 14px; }
   .eq-body {
     flex: 1;

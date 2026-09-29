@@ -100,6 +100,8 @@ export interface VolumeState {
   muted: boolean;
   /** Applied gain in dB; null means silence. */
   gainDb: number | null;
+  /** Bit-perfect playback fixes the volume at 100% (set it on the device). */
+  locked: boolean;
 }
 
 export interface StreamFormat {
@@ -112,6 +114,25 @@ export interface StreamFormat {
 
 export type OutputBackend = 'pipeWire' | 'pulseAudio' | 'alsa' | 'auto' | 'null';
 
+/** Whether the samples reach the device unchanged right now, and if not, why. */
+export type BitPerfectVerdict =
+  | { state: 'off' }
+  | { state: 'pending' }
+  /** `shared`: through PipeWire, so while no other app plays and its volume is at 100%. */
+  | { state: 'yes'; shared: boolean }
+  | { state: 'resampled'; from: number; to: number }
+  | { state: 'truncated'; from: number; to: number }
+  | { state: 'remixed'; from: number; to: number }
+  /** A lossy file's float samples rounded to integers for the device. */
+  | { state: 'fromFloat' };
+
+/** PipeWire's clock settings (rates it may switch to for a stream). */
+export interface PipeWireClock {
+  rate: number;
+  allowedRates: number[];
+  forceRate: number;
+}
+
 export interface SignalPath {
   backend: OutputBackend;
   /** The chosen output device; null follows the system default. */
@@ -120,6 +141,12 @@ export interface SignalPath {
   bufferMs: number | null;
   decoded: StreamFormat | null;
   output: StreamFormat | null;
+  /** The device's hardware is held exclusively. */
+  exclusive: boolean;
+  /** Bit-perfect playback is on (always while exclusive). */
+  bitPerfect: boolean;
+  verdict: BitPerfectVerdict;
+  pipewireClock: PipeWireClock | null;
 }
 
 export type PlayerErrorKind = 'notFound' | 'unreadable' | 'unsupportedFormat' | 'corrupt' | 'outputUnavailable' | 'other';

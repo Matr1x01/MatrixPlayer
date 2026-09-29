@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 
 import { backendLabel, codecLabel, formatDb, formatStreamCompact, khz } from '@/features/player/format';
+import { verdictText } from '@/features/sound/bitPerfect';
 import { eqText, replayGainText, toneParts } from '@/features/sound/chain';
 import { formatGain } from '@/features/sound/eqMath';
 import { useDsp } from '@/stores/dsp';
@@ -16,7 +17,7 @@ interface Stage {
  * Every stage between the file and the device, from what the pipeline
  * negotiated and what the DSP chain reports.
  */
-export function useSignalStages(): { stages: Stage[]; processed: boolean } {
+export function useSignalStages(): { stages: Stage[]; processed: boolean; bitPerfect: ReturnType<typeof verdictText> | null } {
   const track = usePlayer((s) => s.track);
   const signal = usePlayer((s) => s.signal);
   const volume = usePlayer((s) => s.volume);
@@ -51,6 +52,23 @@ export function useSignalStages(): { stages: Stage[]; processed: boolean } {
       .filter(Boolean)
       .join(' · ');
 
+    if (signal.bitPerfect) {
+      const verdict = verdictText(signal.verdict);
+      const bypassed = { value: 'Bypassed · bit-perfect', dot: 'var(--tx3)' };
+      const stages: Stage[] = [
+        { key: 'Source', value: source, dot: 'var(--tx2)' },
+        { key: 'ReplayGain', ...bypassed },
+        { key: 'Equalizer', ...bypassed },
+        { key: 'Processing', value: `None · volume fixed at 100%${volume.muted ? ' · muted' : ''}`, dot: 'var(--tx3)' },
+        {
+          key: 'Output',
+          value: `${signal.device?.name ?? backendLabel(signal.backend)}${signal.output ? ` · ${formatStreamCompact(signal.output)}` : ''}${signal.exclusive ? ' · exclusive' : ''}`,
+          dot: verdict.ok ? 'var(--ok)' : 'var(--warn)',
+        },
+      ];
+      return { stages, processed: false, bitPerfect: verdict };
+    }
+
     const stages: Stage[] = [
       { key: 'Source', value: source, dot: 'var(--tx2)' },
       { key: 'ReplayGain', value: settings ? replayGainText(settings, dspStatus, playing) : 'Off', dot: rgOn ? 'var(--tx2)' : 'var(--tx3)' },
@@ -67,18 +85,26 @@ export function useSignalStages(): { stages: Stage[]; processed: boolean } {
       },
     ];
     const processed = eqOn || rgOn || tone.length > 0 || !!settings?.crossfeed || volume.muted || volume.level < 1;
-    return { stages, processed };
+    return { stages, processed, bitPerfect: null };
   }, [track, signal, volume, status, settings, dspStatus]);
 }
 
 export function SignalPath() {
-  const { stages, processed } = useSignalStages();
+  const { stages, processed, bitPerfect } = useSignalStages();
 
   return (
     <section className="np-signal" aria-label="Signal path">
       <div className="flex items-center justify-between">
         <span className="cap">Signal path</span>
-        {processed ? <span className="chip acc">Processed</span> : <span className="chip ok">Unity gain</span>}
+        {bitPerfect ? (
+          <span className={bitPerfect.ok ? 'chip ok' : 'chip warn'} data-tip={bitPerfect.detail}>
+            {bitPerfect.label}
+          </span>
+        ) : processed ? (
+          <span className="chip acc">Processed</span>
+        ) : (
+          <span className="chip ok">Unity gain</span>
+        )}
       </div>
       <div className="np-signal-list">
         {stages.map((stage) => (

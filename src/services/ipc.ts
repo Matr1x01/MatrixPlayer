@@ -72,6 +72,10 @@ export const outputApi = {
   devices: () => invoke<OutputDevices>('audio_output_devices'),
   /** null follows the system default. */
   setDevice: (id: string | null) => invoke<void>('player_set_output_device', { id }),
+  /** No processing, volume fixed at 100%, through the system mixer. */
+  setBitPerfect: (enabled: boolean) => invoke<void>('player_set_bit_perfect', { enabled }),
+  /** The selected device's hardware, held exclusively. */
+  setExclusive: (enabled: boolean) => invoke<void>('player_set_exclusive', { enabled }),
 };
 
 export const queueApi = {
