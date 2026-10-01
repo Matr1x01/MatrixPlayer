@@ -63,7 +63,8 @@ for audio files, with Play/Pause, Next and Previous actions in your launcher.
   format, ReplayGain, EQ, processing and the negotiated output format). Click
   a stage to jump to its settings.
 - **Output devices.** Switch between PipeWire devices mid-track without losing
-  your place.
+  your place. If PipeWire restarts (after an update, say), playback reconnects
+  and carries on.
 
 ### Library
 
@@ -192,8 +193,10 @@ What to look for:
   launch again.
 - **The window stays blank.** If there is no *interface started* line, the web
   view did not load: look at the `stderr` lines from WebKit and EGL.
-- **No sound after a system update.** Look for *GStreamer could not load …
-  plugins*, and at the `plugin` lines near the top.
+- **No sound after a system update.** Look for *PipeWire went away*: an
+  update that restarts PipeWire is followed by *reconnected the audio output*,
+  or by why it could not. Look also for *GStreamer could not load … plugins*,
+  and at the `plugin` lines near the top.
 - **It closed by itself.** The next launch logs *the previous run did not exit
   normally* and names that run's log.
 

@@ -13,6 +13,7 @@
 pub mod diagnostics;
 mod engine;
 pub mod output;
+pub mod pipewire;
 pub mod reserve;
 pub mod waveform;
 
