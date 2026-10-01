@@ -1,0 +1,40 @@
+# The GStreamer plugins the AppImage bundles: libgst<name>.so from the build
+# system's GStreamer. Everything else (video, cameras, networking, WebRTC,
+# CUDA, Vulkan …) is left out, and with it the libraries it would drag in.
+# A name the build system lacks is skipped with a warning.
+
+# Playback, conversion and the formats' parsers
+coreelements
+playback
+typefindfunctions
+audioconvert
+audioresample
+audioparsers
+autodetect
+volume
+
+# Containers and tags
+ogg
+isomp4
+matroska
+wavparse
+aiff
+asf
+apetag
+id3demux
+
+# Decoders: FLAC, MP3, Opus, Vorbis, WavPack, Speex, Musepack; FFmpeg's
+# (gst-libav) for AAC, ALAC, APE, WMA and float MP3/Opus
+flac
+mpg123
+opus
+vorbis
+wavpack
+speex
+musepack
+libav
+
+# Outputs
+pipewire
+pulseaudio
+alsa

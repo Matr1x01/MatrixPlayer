@@ -60,7 +60,7 @@ const KEYWORDS: Record<Section, string> = {
   lyrics: 'lyrics lrc synced embedded sources offset',
   shortcuts: `keyboard keys hotkeys ${SHORTCUTS.map((s) => s.action).join(' ')}`,
   desktop: 'mpris media keys lock screen notifications opening files command line launcher actions',
-  about: 'version gstreamer storage database',
+  about: 'version gstreamer storage database logs log files troubleshooting diagnostics errors crash debug',
 };
 
 function matches(section: (typeof SECTIONS)[number], query: string) {
@@ -247,7 +247,11 @@ function ShortcutSettings() {
   );
 }
 
+const RETENTION_DAYS = ['1', '7', '14', '30', '90'] as const;
+type RetentionDays = (typeof RETENTION_DAYS)[number];
+
 function About({ info }: { info: AppInfo | null }) {
+  const days = usePreferences((s) => s.prefs.logRetentionDays);
   return (
     <>
       <SettingRow title="Version" hint="MatrixPlayer">
@@ -258,6 +262,25 @@ function About({ info }: { info: AppInfo | null }) {
       </SettingRow>
       <SettingRow title="Storage" hint="Settings and library data">
         <span className="t2">SQLite database in the app data directory</span>
+      </SettingRow>
+      <SettingRow title="Logs" hint="Startup, errors and the audio engine, to find out why something failed">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="mono t2 min-w-0 truncate" title={info?.logDir ?? undefined}>
+            {info ? (info.logDir?.replace(/^\/home\/[^/]+/, '~') ?? 'Not available') : '…'}
+          </span>
+          <button type="button" className="btn gh shrink-0" disabled={!info?.logDir} onClick={() => void run(systemApi.openLogFolder())}>
+            Open folder
+          </button>
+        </div>
+      </SettingRow>
+      <SettingRow title="Keep logs for" hint="Older log files are deleted; at most 64 MB are kept">
+        <Segmented<RetentionDays>
+          label="Keep logs for"
+          size="sm"
+          value={String(days) as RetentionDays}
+          onChange={(value) => void updatePreferences({ logRetentionDays: Number(value) })}
+          options={RETENTION_DAYS.map((d) => ({ value: d, label: d === '1' ? '1 day' : `${d} days` }))}
+        />
       </SettingRow>
     </>
   );

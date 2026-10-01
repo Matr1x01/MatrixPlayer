@@ -147,6 +147,7 @@ const prefs: UiPreferences = {
   interfaceScale: 1,
   trackNotifications: true,
   restoreSession: true,
+  logRetentionDays: 7,
 };
 
 // The Equalizer board's "Warm Headphone" curve.
@@ -285,7 +286,12 @@ mockIPC(
       case 'update_ui_preferences':
         return Object.assign(prefs, (args as { patch: Partial<UiPreferences> }).patch);
       case 'get_app_info':
-        return { name: 'MatrixPlayer', version: '0.1.0', gstreamerVersion: 'GStreamer 1.28.7' };
+        return {
+          name: 'MatrixPlayer',
+          version: '0.1.0',
+          gstreamerVersion: 'GStreamer 1.28.7',
+          logDir: '/home/you/.local/share/io.github.matr1x01.MatrixPlayer/logs',
+        };
       case 'plugin:window|is_fullscreen':
         return false;
       case 'library_stats':

@@ -9,16 +9,22 @@
 //! open. With no device chosen, the sound server's default is followed,
 //! including when the user switches it elsewhere.
 //!
+//! PipeWire is used natively only when it is the sound server (it has an
+//! audio output; on Ubuntu 22.04 it runs for screen sharing alone) and its
+//! plugin is recent enough to keep the device monitor off the streams'
+//! connection: see `pipewire`.
+//!
 //! A device the sound server drives through ALSA can also be opened
 //! exclusively: straight on its hardware PCM, bypassing the server, once
 //! the card has been borrowed from it (see `reserve`).
 
-use std::sync::{Mutex, RwLock};
+use std::sync::{OnceLock, RwLock};
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use serde::Serialize;
 
+use super::pipewire;
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -112,8 +118,9 @@ impl std::fmt::Debug for Output {
     }
 }
 
-/// The backend `create` would pick, honouring `MATRIXPLAYER_AUDIO_SINK`.
-fn candidates() -> Vec<OutputBackend> {
+/// The backends `create` tries, in order, honouring `MATRIXPLAYER_AUDIO_SINK`.
+/// Lazy: PipeWire is only asked about when it comes to it.
+fn candidates() -> impl Iterator<Item = OutputBackend> {
     let forced = std::env::var("MATRIXPLAYER_AUDIO_SINK").ok().and_then(|v| match v.as_str() {
         "pipewire" => Some(OutputBackend::PipeWire),
         "pulse" => Some(OutputBackend::PulseAudio),
@@ -122,7 +129,23 @@ fn candidates() -> Vec<OutputBackend> {
         "null" => Some(OutputBackend::Null),
         _ => None,
     });
-    forced.into_iter().chain(PREFERENCE).collect()
+    let preferred = PREFERENCE.into_iter().filter(|b| *b != OutputBackend::PipeWire || pipewire_serves_audio());
+    forced.into_iter().chain(preferred)
+}
+
+/// Whether to play through PipeWire natively: its plugin is recent enough
+/// and it is the sound server, with at least one audio output. Decided
+/// once, so a PipeWire restart (its outputs come back a moment after it)
+/// cannot move playback to another backend.
+fn pipewire_serves_audio() -> bool {
+    static SERVES: OnceLock<bool> = OnceLock::new();
+    *SERVES.get_or_init(|| {
+        let serves = pipewire::devices().is_some_and(|devices| devices.iter().any(|d| d.has_classes("Audio/Sink")));
+        if !serves && gst::ElementFactory::find("pipewiresink").is_some() {
+            log::info!("not playing through PipeWire natively: it has no audio output, or its plugin is too old");
+        }
+        serves
+    })
 }
 
 /// Creates the first available output sink, honouring `MATRIXPLAYER_AUDIO_SINK`
@@ -135,10 +158,6 @@ pub fn create(device: Option<&str>) -> AppResult<Output> {
         let Ok(sink) = gst::ElementFactory::make(backend.factory()).name(SINK_NAME).build() else {
             continue;
         };
-        if backend == OutputBackend::PipeWire {
-            // Started before any stream is open: see `provider`.
-            provider(backend);
-        }
         if backend == OutputBackend::Null {
             sink.set_property("sync", true);
         }
@@ -182,7 +201,7 @@ pub fn open_exclusive(device: &OutputDevice) -> AppResult<Output> {
 
 /// The backend shared playback uses (what [`create`] picks first).
 pub fn shared_backend() -> OutputBackend {
-    candidates().into_iter().find(|b| gst::ElementFactory::find(b.factory()).is_some()).unwrap_or(OutputBackend::Auto)
+    candidates().find(|b| gst::ElementFactory::find(b.factory()).is_some()).unwrap_or(OutputBackend::Auto)
 }
 
 /// An output that renders nothing, in real time: a stand-in while a device
@@ -265,11 +284,15 @@ pub fn devices(backend: OutputBackend) -> Vec<OutputDevice> {
 }
 
 fn provider_devices(backend: OutputBackend) -> Vec<(OutputDevice, gst::Device)> {
-    let Some(provider) = provider(backend) else {
-        return Vec::new();
+    let devices: Vec<gst::Device> = match backend {
+        OutputBackend::PipeWire => pipewire::devices().unwrap_or_default(),
+        _ => backend
+            .device_provider()
+            .and_then(gst::DeviceProviderFactory::by_name)
+            .map(|provider| provider.devices().into_iter().collect())
+            .unwrap_or_default(),
     };
-    let mut out: Vec<(OutputDevice, gst::Device)> = provider
-        .devices()
+    let mut out: Vec<(OutputDevice, gst::Device)> = devices
         .into_iter()
         .filter(|d| d.has_classes("Audio/Sink"))
         .filter_map(|d| describe_device(&d).map(|info| (info, d)))
@@ -279,39 +302,13 @@ fn provider_devices(backend: OutputBackend) -> Vec<(OutputDevice, gst::Device)> 
     out
 }
 
-/// The device provider for `backend`.
-///
-/// PipeWire's provider cannot be probed again while a stream is open: every
-/// PipeWire element in the process shares one connection, and a second probe
-/// on it waits forever for the server's reply, taking the connection's lock
-/// (and so playback) down with it. Starting the provider is such a probe,
-/// and hangs the same way while a stream sits paused (a restored session).
-/// Its provider is therefore started once, by [`create`] before the first
-/// stream opens, and kept running; a running provider answers from the
-/// devices it monitors, without probing, and follows hotplug.
-fn provider(backend: OutputBackend) -> Option<gst::DeviceProvider> {
-    static PIPEWIRE: Mutex<Option<gst::DeviceProvider>> = Mutex::new(None);
-
-    let factory = backend.device_provider()?;
-    if backend != OutputBackend::PipeWire {
-        return gst::DeviceProviderFactory::by_name(factory);
-    }
-    let mut monitor = PIPEWIRE.lock().unwrap();
-    if monitor.is_none() {
-        let provider = gst::DeviceProviderFactory::by_name(factory)?;
-        // Nobody reads the hotplug messages; the device list is what matters.
-        provider.bus().set_sync_handler(|_, _| gst::BusSyncReply::Drop);
-        if let Err(e) = provider.start() {
-            log::warn!("could not monitor {factory}: {e}");
-            return None;
-        }
-        *monitor = Some(provider);
-    }
-    monitor.clone()
-}
-
 fn open_device(backend: OutputBackend, id: &str) -> Option<(gst::Element, OutputDevice)> {
     let (info, device) = provider_devices(backend).into_iter().find(|(info, _)| info.id == id)?;
+    if backend == OutputBackend::PipeWire {
+        // Not `create_element`: that would put the sink on the monitor's
+        // connection (see `pipewire`).
+        return pipewire::sink(SINK_NAME, Some(&info.id)).map(|sink| (sink, info));
+    }
     match device.create_element(Some(SINK_NAME)) {
         Ok(sink) => Some((sink, info)),
         Err(e) => {

@@ -12,6 +12,9 @@
 //! While a device changes hands the player plays into a silent stand-in, so
 //! the old and the new output are never open at once; if it was playing it
 //! pauses (with its soft fade) first and plays on after.
+//!
+//! When PipeWire restarts, the shared output is rebuilt on its new
+//! connection (see `audio::pipewire`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -21,7 +24,8 @@ use tokio::sync::Mutex;
 
 use super::{PlaybackStatus, PlayerCommand, PlayerError, PlayerEvent, PlayerHandle};
 use crate::audio::EngineErrorKind;
-use crate::audio::output::{self, OutputDevice};
+use crate::audio::output::{self, OutputBackend, OutputDevice};
+use crate::audio::pipewire;
 use crate::audio::reserve::{ReleaseFn, Reservation};
 use crate::database::{Database, settings};
 use crate::error::{AppError, AppResult};
@@ -67,6 +71,7 @@ impl OutputMode {
             changing: Mutex::new(()),
         });
         mode.follow_playback();
+        mode.follow_pipewire();
         if exclusive && let Some(id) = device {
             let mode = mode.clone();
             tokio::spawn(async move {
@@ -289,6 +294,46 @@ impl OutputMode {
             file_name: None,
         };
         let _ = self.player.command(PlayerCommand::Notice(notice)).await;
+    }
+
+    /// Rebuilds the output each time PipeWire comes back after going away.
+    fn follow_pipewire(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        let runtime = tokio::runtime::Handle::current();
+        pipewire::on_restart(move || {
+            if let Some(mode) = weak.upgrade() {
+                runtime.spawn(async move { mode.reconnect().await });
+            }
+        });
+    }
+
+    /// PipeWire restarted: the stream on its old connection went quiet,
+    /// without an error. A new sink opens a new connection, and playback
+    /// carries on from where the sound stopped. Exclusive playback goes
+    /// straight to the hardware and is left alone.
+    async fn reconnect(&self) {
+        let _changing = self.changing.lock().await;
+        if self.held.lock().await.is_some() {
+            return;
+        }
+        match self.player.snapshot().await {
+            Ok(snapshot) if snapshot.signal.backend == OutputBackend::PipeWire => {}
+            _ => return,
+        }
+        let device = settings::get::<Option<String>>(&self.db, OUTPUT_DEVICE_KEY).await.ok().flatten().flatten();
+        if let Some(id) = &device {
+            // Its node comes back a moment after PipeWire does.
+            self.wait_for_return(id).await;
+        }
+        let rebuilt = match tokio::task::spawn_blocking(move || output::create(device.as_deref())).await {
+            Ok(Ok(out)) => self.player.command(PlayerCommand::SetOutput(Box::new(out))).await,
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(AppError::Audio(e.to_string())),
+        };
+        match rebuilt {
+            Ok(()) => log::info!("reconnected the audio output after PipeWire restarted"),
+            Err(e) => log::error!("could not reconnect the audio output after PipeWire restarted: {e}"),
+        }
     }
 
     /// Keeps the card's "playing" flag current (it decides whether the card

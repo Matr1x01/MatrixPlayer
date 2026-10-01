@@ -100,6 +100,10 @@ export const systemApi = {
   appInfo: () => invoke<AppInfo>('get_app_info'),
   preferences: () => invoke<UiPreferences>('get_ui_preferences'),
   updatePreferences: (patch: UiPreferencesPatch) => invoke<UiPreferences>('update_ui_preferences', { patch }),
+  openLogFolder: () => invoke<void>('open_log_folder'),
+  /** Writes to MatrixPlayer's log (see services/log.ts). */
+  log: (level: 'error' | 'warn' | 'info', message: string, detail?: string) =>
+    invoke<void>('log_from_ui', { level, message, detail: detail ?? null }),
 };
 
 export const libraryApi = {

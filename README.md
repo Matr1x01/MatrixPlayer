@@ -63,7 +63,12 @@ for audio files, with Play/Pause, Next and Previous actions in your launcher.
   format, ReplayGain, EQ, processing and the negotiated output format). Click
   a stage to jump to its settings.
 - **Output devices.** Switch between PipeWire devices mid-track without losing
-  your place.
+  your place. If PipeWire restarts (after an update, say), playback reconnects
+  and carries on.
+- **Bit-perfect playback.** The processing is bypassed and the volume fixed at
+  100%, through PipeWire or with **exclusive access**, straight to the DAC
+  while other programs wait. A verdict says whether the samples arrive
+  unchanged, or what changes them (resampling, fewer bits, a remix).
 
 ### Library
 
@@ -168,13 +173,47 @@ starting a second copy, so you can bind them to keys in your compositor.
 | `MATRIXPLAYER_AUDIO_SINK=pipewire\|pulse\|alsa\|auto\|null` | Force an output backend. `null` plays in real time into nothing, for headless runs. |
 | `RUST_LOG=matrixplayer_lib=debug` | Log pipeline decisions (gapless queueing, errors). |
 
+## Troubleshooting
+
+MatrixPlayer writes a log for each launch to
+`~/.local/share/io.github.matr1x01.MatrixPlayer/logs/`; `latest.log` is the
+newest. *Settings → About* opens the folder and sets how long logs are kept
+(7 days by default, never more than 64 MB in all). Each log records:
+
+- the version, how MatrixPlayer was started, the distribution and kernel, and
+  the environment variables that affect GStreamer, PipeWire and WebKit (an
+  AppImage sets several);
+- the GStreamer version, where each plugin playback needs was loaded from,
+  which formats it can decode, and any plugin that failed to load;
+- errors and warnings from MatrixPlayer, GStreamer and the interface, and
+  anything the libraries underneath print to the terminal;
+- crashes, with where they happened.
+
+What to look for:
+
+- **Nothing happens when you launch it.** Look for *MatrixPlayer is already
+  running (pid …)*. A launch hands over to the copy that is already running,
+  even one that has stopped responding. End that process (`kill <pid>`) and
+  launch again.
+- **The window stays blank.** If there is no *interface started* line, the web
+  view did not load: look at the `stderr` lines from WebKit and EGL.
+- **No sound after a system update.** Look for *PipeWire went away*: an
+  update that restarts PipeWire is followed by *reconnected the audio output*,
+  or by why it could not. Look also for *GStreamer could not load … plugins*,
+  and at the `plugin` lines near the top.
+- **It closed by itself.** The next launch logs *the previous run did not exit
+  normally* and names that run's log.
+
+If the AppImage does not start at all, run it from a terminal: a library that
+fails to load stops it before it can write a log.
+
 ## Not yet
 
 These features show in the interface as unavailable instead of pretending to
 work:
 
 - Crossfade (tracks join gaplessly instead)
-- Exclusive device access, and forcing an output sample rate or bit depth
+- Forcing an output sample rate or bit depth
 - Per-device EQ presets
 - Accent colour taken from artwork, and following the system's light or dark
   setting
@@ -209,7 +248,21 @@ cargo test --manifest-path src-tauri/Cargo.toml -- --ignored   # + tests against
 npx tauri build                     # release build and packages (.deb, .rpm, AppImage)
 ```
 
-Packages are written to `src-tauri/target/release/bundle/`. The desktop entry
+Packages are written to `src-tauri/target/release/bundle/`. An AppImage built
+this way runs only on systems with this one's glibc or newer, so one built on
+a rolling distribution such as Arch will not start on Ubuntu. To build one
+that does, in an Ubuntu container (needs Docker):
+
+```sh
+scripts/build-appimage.sh           # on Ubuntu 22.04: runs on glibc 2.35+
+scripts/build-appimage.sh 24.04     # on Ubuntu 24.04: runs on glibc 2.39+
+```
+
+The AppImage lands in `dist-appimage/ubuntu-<release>/` and carries that
+release's GStreamer, with only the plugins listed in
+`packaging/appimage/plugins.txt`.
+
+The desktop entry
 (`src-tauri/linux/matrixplayer.desktop`) registers the audio MIME types and
 launcher actions. AppStream metadata is in
 `src-tauri/linux/io.github.matr1x01.MatrixPlayer.metainfo.xml`.

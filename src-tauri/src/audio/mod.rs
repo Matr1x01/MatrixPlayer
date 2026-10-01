@@ -10,8 +10,10 @@
 //! what the pipeline does as [`EngineEvent`]s, and switches to a preloaded
 //! next URI without a gap when the current stream is about to end.
 
+pub mod diagnostics;
 mod engine;
 pub mod output;
+pub mod pipewire;
 pub mod reserve;
 pub mod waveform;
 

@@ -24,6 +24,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   interfaceScale: 1,
   trackNotifications: true,
   restoreSession: true,
+  logRetentionDays: 7,
 };
 
 export const usePreferences = create<PreferencesStore>()(() => ({
