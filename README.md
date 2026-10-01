@@ -244,7 +244,21 @@ cargo test --manifest-path src-tauri/Cargo.toml -- --ignored   # + tests against
 npx tauri build                     # release build and packages (.deb, .rpm, AppImage)
 ```
 
-Packages are written to `src-tauri/target/release/bundle/`. The desktop entry
+Packages are written to `src-tauri/target/release/bundle/`. An AppImage built
+this way runs only on systems with this one's glibc or newer, so one built on
+a rolling distribution such as Arch will not start on Ubuntu. To build one
+that does, in an Ubuntu container (needs Docker):
+
+```sh
+scripts/build-appimage.sh           # on Ubuntu 22.04: runs on glibc 2.35+
+scripts/build-appimage.sh 24.04     # on Ubuntu 24.04: runs on glibc 2.39+
+```
+
+The AppImage lands in `dist-appimage/ubuntu-<release>/` and carries that
+release's GStreamer, with only the plugins listed in
+`packaging/appimage/plugins.txt`.
+
+The desktop entry
 (`src-tauri/linux/matrixplayer.desktop`) registers the audio MIME types and
 launcher actions. AppStream metadata is in
 `src-tauri/linux/io.github.matr1x01.MatrixPlayer.metainfo.xml`.
