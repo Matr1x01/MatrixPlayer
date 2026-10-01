@@ -65,6 +65,10 @@ for audio files, with Play/Pause, Next and Previous actions in your launcher.
 - **Output devices.** Switch between PipeWire devices mid-track without losing
   your place. If PipeWire restarts (after an update, say), playback reconnects
   and carries on.
+- **Bit-perfect playback.** The processing is bypassed and the volume fixed at
+  100%, through PipeWire or with **exclusive access**, straight to the DAC
+  while other programs wait. A verdict says whether the samples arrive
+  unchanged, or what changes them (resampling, fewer bits, a remix).
 
 ### Library
 
@@ -209,7 +213,7 @@ These features show in the interface as unavailable instead of pretending to
 work:
 
 - Crossfade (tracks join gaplessly instead)
-- Exclusive device access, and forcing an output sample rate or bit depth
+- Forcing an output sample rate or bit depth
 - Per-device EQ presets
 - Accent colour taken from artwork, and following the system's light or dark
   setting
