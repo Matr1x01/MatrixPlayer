@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 
+import { logToCore } from '@/services/log';
+
 export type ToastTone = 'info' | 'error';
 
 export interface Toast {
@@ -29,6 +31,7 @@ export const useToasts = create<ToastStore>()((set) => ({
 }));
 
 export function showToast(toast: Omit<Toast, 'id'>) {
+  if (toast.tone === 'error') logToCore('warn', `shown to the user: ${toast.message}`, toast.detail);
   const id = nextId++;
   useToasts.setState((s) => ({ toasts: [...s.toasts, { ...toast, id }].slice(-MAX_VISIBLE) }));
   window.setTimeout(() => useToasts.getState().dismiss(id), toast.action ? ACTION_LIFETIME_MS : LIFETIME_MS[toast.tone]);

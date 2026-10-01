@@ -19,6 +19,8 @@ export interface UiPreferences {
   trackNotifications: boolean;
   /** At startup, bring back the last queue, paused where it was. */
   restoreSession: boolean;
+  /** How long log files are kept, 1–90 days. */
+  logRetentionDays: number;
 }
 
 export type UiPreferencesPatch = Partial<UiPreferences>;
@@ -27,4 +29,6 @@ export interface AppInfo {
   name: string;
   version: string;
   gstreamerVersion: string;
+  /** Where the log files are; null if they cannot be written. */
+  logDir: string | null;
 }

@@ -168,6 +168,38 @@ starting a second copy, so you can bind them to keys in your compositor.
 | `MATRIXPLAYER_AUDIO_SINK=pipewire\|pulse\|alsa\|auto\|null` | Force an output backend. `null` plays in real time into nothing, for headless runs. |
 | `RUST_LOG=matrixplayer_lib=debug` | Log pipeline decisions (gapless queueing, errors). |
 
+## Troubleshooting
+
+MatrixPlayer writes a log for each launch to
+`~/.local/share/io.github.matr1x01.MatrixPlayer/logs/`; `latest.log` is the
+newest. *Settings → About* opens the folder and sets how long logs are kept
+(7 days by default, never more than 64 MB in all). Each log records:
+
+- the version, how MatrixPlayer was started, the distribution and kernel, and
+  the environment variables that affect GStreamer, PipeWire and WebKit (an
+  AppImage sets several);
+- the GStreamer version, where each plugin playback needs was loaded from,
+  which formats it can decode, and any plugin that failed to load;
+- errors and warnings from MatrixPlayer, GStreamer and the interface, and
+  anything the libraries underneath print to the terminal;
+- crashes, with where they happened.
+
+What to look for:
+
+- **Nothing happens when you launch it.** Look for *MatrixPlayer is already
+  running (pid …)*. A launch hands over to the copy that is already running,
+  even one that has stopped responding. End that process (`kill <pid>`) and
+  launch again.
+- **The window stays blank.** If there is no *interface started* line, the web
+  view did not load: look at the `stderr` lines from WebKit and EGL.
+- **No sound after a system update.** Look for *GStreamer could not load …
+  plugins*, and at the `plugin` lines near the top.
+- **It closed by itself.** The next launch logs *the previous run did not exit
+  normally* and names that run's log.
+
+If the AppImage does not start at all, run it from a terminal: a library that
+fails to load stops it before it can write a log.
+
 ## Not yet
 
 These features show in the interface as unavailable instead of pretending to

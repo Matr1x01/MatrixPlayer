@@ -16,6 +16,7 @@ mod error;
 mod events;
 mod filesystem;
 mod library;
+mod logging;
 mod metadata;
 mod player;
 mod preferences;
@@ -39,13 +40,28 @@ use crate::player::{InsertMode, PlayerHandle, PlayerSettings};
 use crate::state::AppState;
 
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn")).init();
+    logging::init();
+    logging::system::report();
+    // A launch while MatrixPlayer runs is handed over (see the single-
+    // instance plugin below); say so, as nothing else will.
+    let running = desktop::running_instance().filter(|pid| *pid != std::process::id());
+    match running {
+        Some(pid) => log::info!(
+            "MatrixPlayer is already running ({}); {}",
+            logging::system::describe_process(pid),
+            logging::HANDED_OVER
+        ),
+        None => logging::check_previous_run(),
+    }
 
     if let Err(err) = gstreamer::init() {
-        eprintln!("MatrixPlayer needs GStreamer 1.x and could not initialise it: {err}");
+        log::error!("MatrixPlayer needs GStreamer 1.x and could not initialise it: {err}");
         std::process::exit(1);
     }
-    log::info!("{}", gstreamer::version_string());
+    audio::diagnostics::forward_log();
+    if running.is_none() {
+        audio::diagnostics::report();
+    }
     audio::prefer_float_decoders();
 
     tauri::Builder::default()
@@ -160,18 +176,21 @@ pub fn run() {
             commands::system::get_app_info,
             commands::system::get_ui_preferences,
             commands::system::update_ui_preferences,
+            commands::system::open_log_folder,
+            commands::system::log_from_ui,
         ])
         .build(tauri::generate_context!())
         .expect("error while building MatrixPlayer")
         .run(|app, event| {
-            if let tauri::RunEvent::Exit = event
-                && let Some(state) = app.try_state::<AppState>()
-            {
-                state.library.shutdown();
-                tauri::async_runtime::block_on(async {
-                    state.player.flush().await;
-                    state.dsp.flush().await;
-                });
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.library.shutdown();
+                    tauri::async_runtime::block_on(async {
+                        state.player.flush().await;
+                        state.dsp.flush().await;
+                    });
+                }
+                log::info!("{}", logging::EXITED);
             }
         });
 }
@@ -180,8 +199,11 @@ fn setup(app: &AppHandle) -> Result<(), error::AppError> {
     let path_err = |e: tauri::Error| error::AppError::Io(std::io::Error::other(e.to_string()));
     let data_dir = app.path().app_data_dir().map_err(path_err)?;
     let cache_dir = app.path().app_cache_dir().map_err(path_err)?;
+    log::info!("data folder: {}", data_dir.display());
 
     let db = tauri::async_runtime::block_on(Database::open(&data_dir.join("matrixplayer.db")))?;
+    let prefs = tauri::async_runtime::block_on(preferences::load(&db)).unwrap_or_default();
+    logging::set_retention_days(prefs.log_retention_days);
     let artwork = Arc::new(ArtworkStore::new(cache_dir.join("artwork"))?);
     let settings = tauri::async_runtime::block_on(PlayerSettings::load(&db));
 
@@ -235,6 +257,7 @@ fn restore_last_session(app: &AppHandle) {
 
 /// Acts on the arguments of a second launch.
 fn handle_invocation(app: &AppHandle, invocation: desktop::Invocation) {
+    log::info!("a second launch handed over: {invocation:?}");
     match invocation {
         desktop::Invocation::Command(command) => {
             let app = app.clone();

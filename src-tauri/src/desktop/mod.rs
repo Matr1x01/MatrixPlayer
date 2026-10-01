@@ -12,6 +12,21 @@ use tauri::{AppHandle, Manager};
 
 use crate::player::PlayerCommand;
 
+/// The D-Bus name the single-instance plugin holds for the running app.
+const SINGLE_INSTANCE: &str = "io.github.matr1x01.MatrixPlayer.SingleInstance";
+
+/// The process id of a MatrixPlayer already running in this session. A new
+/// launch hands its arguments to that one and exits, even when it does not
+/// answer, so a stuck instance looks like a launch that does nothing.
+pub fn running_instance() -> Option<u32> {
+    tauri::async_runtime::block_on(async {
+        let bus = zbus::Connection::session().await.ok()?;
+        let dbus = zbus::fdo::DBusProxy::new(&bus).await.ok()?;
+        let name = zbus::names::BusName::try_from(SINGLE_INSTANCE).ok()?;
+        dbus.get_connection_unix_process_id(name).await.ok()
+    })
+}
+
 /// Brings the main window to the front.
 pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {

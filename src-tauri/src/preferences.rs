@@ -70,10 +70,14 @@ pub struct UiPreferences {
     pub track_notifications: bool,
     /// At startup, bring back the last queue, paused where it was.
     pub restore_session: bool,
+    /// How long log files are kept, in days.
+    pub log_retention_days: u32,
 }
 
 /// Allowed range for [`UiPreferences::interface_scale`] (Settings board).
 pub const SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.85..=1.5;
+/// Allowed range for [`UiPreferences::log_retention_days`].
+pub const RETENTION_RANGE: std::ops::RangeInclusive<u32> = 1..=90;
 
 impl Default for UiPreferences {
     fn default() -> Self {
@@ -87,6 +91,7 @@ impl Default for UiPreferences {
             interface_scale: 1.0,
             track_notifications: true,
             restore_session: true,
+            log_retention_days: crate::logging::DEFAULT_RETENTION_DAYS,
         }
     }
 }
@@ -105,6 +110,7 @@ pub struct UiPreferencesPatch {
     pub interface_scale: Option<f64>,
     pub track_notifications: Option<bool>,
     pub restore_session: Option<bool>,
+    pub log_retention_days: Option<u32>,
 }
 
 /// Distinguishes a field sent as `null` (`Some(None)`) from one not sent at
@@ -123,6 +129,9 @@ pub async fn load(db: &Database) -> AppResult<UiPreferences> {
     let mut prefs: UiPreferences = serde_json::from_value(serde_json::Value::Object(stored)).unwrap_or_default();
     if !SCALE_RANGE.contains(&prefs.interface_scale) {
         prefs.interface_scale = 1.0;
+    }
+    if !RETENTION_RANGE.contains(&prefs.log_retention_days) {
+        prefs.log_retention_days = crate::logging::DEFAULT_RETENTION_DAYS;
     }
     Ok(prefs)
 }
@@ -172,6 +181,17 @@ pub async fn update(db: &Database, patch: UiPreferencesPatch) -> AppResult<UiPre
         prefs.interface_scale = scale;
         settings::set(db, "ui.interfaceScale", &scale).await?;
     }
+    if let Some(days) = patch.log_retention_days {
+        if !RETENTION_RANGE.contains(&days) {
+            return Err(AppError::InvalidArgument(format!(
+                "logs can be kept for {} to {} days",
+                RETENTION_RANGE.start(),
+                RETENTION_RANGE.end()
+            )));
+        }
+        prefs.log_retention_days = days;
+        settings::set(db, "ui.logRetentionDays", &days).await?;
+    }
     Ok(prefs)
 }
 
@@ -205,6 +225,20 @@ mod tests {
         assert!(update(&db, bad).await.is_err());
         let good: UiPreferencesPatch = serde_json::from_str(r#"{"interfaceScale":1.25}"#).unwrap();
         assert_eq!(update(&db, good).await.unwrap().interface_scale, 1.25);
+    }
+
+    #[tokio::test]
+    async fn validates_log_retention() {
+        let db = Database::in_memory().await.unwrap();
+        assert_eq!(load(&db).await.unwrap().log_retention_days, 7);
+        for days in [0, 91] {
+            let bad: UiPreferencesPatch =
+                serde_json::from_value(serde_json::json!({ "logRetentionDays": days })).unwrap();
+            assert!(update(&db, bad).await.is_err(), "{days}");
+        }
+        let good: UiPreferencesPatch = serde_json::from_str(r#"{"logRetentionDays":30}"#).unwrap();
+        update(&db, good).await.unwrap();
+        assert_eq!(load(&db).await.unwrap().log_retention_days, 30);
     }
 
     #[test]

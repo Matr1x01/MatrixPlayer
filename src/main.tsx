@@ -13,8 +13,15 @@ import './features/library/library.css';
 import './styles/motion.css';
 
 import { App } from './app/App';
+import { captureInterfaceErrors, logToCore, logUncaught } from './services/log';
 
-createRoot(document.getElementById('root')!).render(
+captureInterfaceErrors();
+// In the log, this line shows the webview came up and can reach the core.
+logToCore('info', `interface started (${navigator.userAgent})`);
+
+createRoot(document.getElementById('root')!, {
+  onUncaughtError: (error, info) => logUncaught(error, info.componentStack),
+}).render(
   <StrictMode>
     <App />
   </StrictMode>,
