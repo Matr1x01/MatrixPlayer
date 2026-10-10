@@ -2,7 +2,7 @@
 node_modules/
 dist/
 src-tauri/target/
-dist-appimage/
+dist-packages/
 src-tauri/gen/schemas/
 
 # Design extraction output (regenerate with `npm run extract-design`)

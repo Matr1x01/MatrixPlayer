@@ -1,8 +1,8 @@
-# The build environment for MatrixPlayer's AppImage (see
-# scripts/build-appimage.sh). An AppImage runs only where the glibc is at
-# least as new as the one it was built against, so it is built on an older
-# Ubuntu: 22.04 (glibc 2.35) by default, or 24.04 (glibc 2.39).
-ARG UBUNTU=22.04
+# The build environment for MatrixPlayer's release packages (see
+# scripts/build-packages.sh). A binary runs only where the glibc is at least
+# as new as the one it was built against, so they are built on an older
+# Ubuntu: 24.04 (glibc 2.39) by default, or 22.04 (glibc 2.35).
+ARG UBUNTU=24.04
 FROM ubuntu:${UBUNTU}
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -24,5 +24,9 @@ ENV PATH=/root/.cargo/bin:$PATH
 # linuxdeploy and appimagetool are AppImages themselves; there is no FUSE in a
 # container, so they unpack and run instead.
 ENV APPIMAGE_EXTRACT_AND_RUN=1
+# What linuxdeploy's plugins run: patchelf (GStreamer) and
+# gtk-query-immodules-3.0 (GTK's input methods).
+RUN apt-get update && apt-get install -y --no-install-recommends patchelf libgtk-3-bin \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build

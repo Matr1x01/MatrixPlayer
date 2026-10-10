@@ -35,9 +35,9 @@ Grab a package from the [latest release](https://github.com/Matr1x01/MatrixPlaye
 
 | Package | For | Install |
 | --- | --- | --- |
-| `MatrixPlayer_0.2.0_amd64.AppImage` | Any distribution, including Arch | `chmod +x MatrixPlayer_0.2.0_amd64.AppImage && ./MatrixPlayer_0.2.0_amd64.AppImage` |
-| `MatrixPlayer_0.2.0_amd64.deb` | Debian, Ubuntu, Mint, Pop!_OS | `sudo apt install ./MatrixPlayer_0.2.0_amd64.deb` |
-| `MatrixPlayer-0.2.0-1.x86_64.rpm` | Fedora, openSUSE | `sudo dnf install ./MatrixPlayer-0.2.0-1.x86_64.rpm` |
+| `MatrixPlayer_0.2.0_amd64.AppImage` | Any distribution from 2024 on (glibc 2.39+), including Arch | `chmod +x MatrixPlayer_0.2.0_amd64.AppImage && ./MatrixPlayer_0.2.0_amd64.AppImage` |
+| `MatrixPlayer_0.2.0_amd64.deb` | Ubuntu 24.04+, Debian 13+, Mint 22+, Pop!_OS 24.04+ | `sudo apt install ./MatrixPlayer_0.2.0_amd64.deb` |
+| `MatrixPlayer-0.2.0-1.x86_64.rpm` | Fedora 40+, openSUSE Tumbleweed | `sudo dnf install ./MatrixPlayer-0.2.0-1.x86_64.rpm` |
 
 The AppImage ships its own GStreamer. The `.deb` and `.rpm` packages use the
 system's GStreamer and pull in the base, good and PipeWire plugins. For AAC
@@ -254,19 +254,18 @@ cargo test --manifest-path src-tauri/Cargo.toml -- --ignored   # + tests against
 npx tauri build                     # release build and packages (.deb, .rpm, AppImage)
 ```
 
-Packages are written to `src-tauri/target/release/bundle/`. An AppImage built
-this way runs only on systems with this one's glibc or newer, so one built on
-a rolling distribution such as Arch will not start on Ubuntu. To build one
-that does, in an Ubuntu container (needs Docker):
+Packages are written to `src-tauri/target/release/bundle/`. They run only on
+systems with this one's glibc or newer, so packages built on a rolling
+distribution such as Arch will not start on Ubuntu. Release packages are
+built in an Ubuntu container instead (needs Docker):
 
 ```sh
-scripts/build-appimage.sh           # on Ubuntu 22.04: runs on glibc 2.35+
-scripts/build-appimage.sh 24.04     # on Ubuntu 24.04: runs on glibc 2.39+
+scripts/build-packages.sh           # on Ubuntu 24.04: runs on glibc 2.39+
 ```
 
-The AppImage lands in `dist-appimage/ubuntu-<release>/` and carries that
-release's GStreamer, with only the plugins listed in
-`packaging/appimage/plugins.txt`.
+The AppImage, `.deb` and `.rpm` land in `dist-packages/ubuntu-24.04/` with
+their `SHA256SUMS`. The AppImage carries Ubuntu 24.04's GStreamer, with only
+the plugins listed in `packaging/linux/appimage-plugins.txt`.
 
 The desktop entry
 (`src-tauri/linux/matrixplayer.desktop`) registers the audio MIME types and
