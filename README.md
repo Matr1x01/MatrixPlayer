@@ -14,7 +14,7 @@ a fast local library, and a desktop app built with Tauri 2 and React.
 ![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
 ![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)
 
-[**Download**](https://github.com/Matr1x01/MatrixPlayer/releases/latest) ·
+[**Download**](https://github.com/Matr1x01/MatrixPlayer/releases) ·
 [Features](#features) ·
 [Screenshots](#screenshots) ·
 [Build from source](#build-from-source)
@@ -30,8 +30,10 @@ features are still missing (see [Not yet](#not-yet)), it has been tried on few
 systems so far, and settings may change between releases. If something goes
 wrong, the [logs](#troubleshooting) say why.
 
-Grab a package from the [latest release](https://github.com/Matr1x01/MatrixPlayer/releases/latest)
-(x86_64):
+Grab a package from the [releases page](https://github.com/Matr1x01/MatrixPlayer/releases)
+(x86_64). Each release lists its files' checksums in `SHA256SUMS`; with it
+next to the package, `sha256sum -c --ignore-missing SHA256SUMS` checks the
+download.
 
 | Package | For | Install |
 | --- | --- | --- |
@@ -39,13 +41,20 @@ Grab a package from the [latest release](https://github.com/Matr1x01/MatrixPlaye
 | `MatrixPlayer_0.2.0_amd64.deb` | Ubuntu 24.04+, Debian 13+, Mint 22+, Pop!_OS 24.04+ | `sudo apt install ./MatrixPlayer_0.2.0_amd64.deb` |
 | `MatrixPlayer-0.2.0-1.x86_64.rpm` | Fedora 40+, openSUSE Tumbleweed | `sudo dnf install ./MatrixPlayer-0.2.0-1.x86_64.rpm` |
 
-The AppImage ships its own GStreamer. The `.deb` and `.rpm` packages use the
-system's GStreamer and pull in the base, good and PipeWire plugins. For AAC
-and ALAC (`.m4a`), also install `gstreamer1.0-libav` (Debian/Ubuntu) or
-`gstreamer1-libav` (Fedora).
+The AppImage ships its own GStreamer, with the plugins for every supported
+format. The `.deb` and `.rpm` packages use the system's GStreamer and pull in
+the base, good and PipeWire plugins. On top of those, install:
+
+- for AAC and ALAC (`.m4a`): `gstreamer1.0-libav` (Debian/Ubuntu) or
+  `gstreamer1-libav` (Fedora);
+- for exclusive access to a DAC, on Debian/Ubuntu: `gstreamer1.0-alsa` (most
+  desktops already have it).
 
 The `.deb` and `.rpm` packages add a desktop entry that registers MatrixPlayer
 for audio files, with Play/Pause, Next and Previous actions in your launcher.
+They install as `matrix-player`: `sudo apt remove matrix-player` or
+`sudo dnf remove matrix-player` uninstalls it. Your library, settings and logs
+stay in `~/.local/share/io.github.matr1x01.MatrixPlayer/`.
 
 ## Features
 
