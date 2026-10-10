@@ -9,6 +9,7 @@
 Native playback on GStreamer and PipeWire with a 64-bit float DSP chain,
 a fast local library, and a desktop app built with Tauri 2 and React.
 
+![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational)
 ![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
 ![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)
@@ -24,14 +25,19 @@ a fast local library, and a desktop app built with Tauri 2 and React.
 
 ## Install
 
+MatrixPlayer is alpha software. It plays music well day to day, but some
+features are still missing (see [Not yet](#not-yet)), it has been tried on few
+systems so far, and settings may change between releases. If something goes
+wrong, the [logs](#troubleshooting) say why.
+
 Grab a package from the [latest release](https://github.com/Matr1x01/MatrixPlayer/releases/latest)
 (x86_64):
 
 | Package | For | Install |
 | --- | --- | --- |
-| `MatrixPlayer_0.1.0_amd64.AppImage` | Any distribution, including Arch | `chmod +x MatrixPlayer_0.1.0_amd64.AppImage && ./MatrixPlayer_0.1.0_amd64.AppImage` |
-| `MatrixPlayer_0.1.0_amd64.deb` | Debian, Ubuntu, Mint, Pop!_OS | `sudo apt install ./MatrixPlayer_0.1.0_amd64.deb` |
-| `MatrixPlayer-0.1.0-1.x86_64.rpm` | Fedora, openSUSE | `sudo dnf install ./MatrixPlayer-0.1.0-1.x86_64.rpm` |
+| `MatrixPlayer_0.2.0_amd64.AppImage` | Any distribution, including Arch | `chmod +x MatrixPlayer_0.2.0_amd64.AppImage && ./MatrixPlayer_0.2.0_amd64.AppImage` |
+| `MatrixPlayer_0.2.0_amd64.deb` | Debian, Ubuntu, Mint, Pop!_OS | `sudo apt install ./MatrixPlayer_0.2.0_amd64.deb` |
+| `MatrixPlayer-0.2.0-1.x86_64.rpm` | Fedora, openSUSE | `sudo dnf install ./MatrixPlayer-0.2.0-1.x86_64.rpm` |
 
 The AppImage ships its own GStreamer. The `.deb` and `.rpm` packages use the
 system's GStreamer and pull in the base, good and PipeWire plugins. For AAC

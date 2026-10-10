@@ -1,6 +1,6 @@
 [package]
 name = "matrixplayer"
-version = "1.1.2"
+version = "0.2.0"
 description = "MatrixPlayer — an audio-focused music player for Linux"
 edition = "2024"
 rust-version = "1.92"
