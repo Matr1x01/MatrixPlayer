@@ -37,9 +37,9 @@ download.
 
 | Package | For | Install |
 | --- | --- | --- |
-| `MatrixPlayer_0.2.0_amd64.AppImage` | Any distribution from 2024 on (glibc 2.39+), including Arch | `chmod +x MatrixPlayer_0.2.0_amd64.AppImage && ./MatrixPlayer_0.2.0_amd64.AppImage` |
-| `MatrixPlayer_0.2.0_amd64.deb` | Ubuntu 24.04+, Debian 13+, Mint 22+, Pop!_OS 24.04+ | `sudo apt install ./MatrixPlayer_0.2.0_amd64.deb` |
-| `MatrixPlayer-0.2.0-1.x86_64.rpm` | Fedora 40+, openSUSE Tumbleweed | `sudo dnf install ./MatrixPlayer-0.2.0-1.x86_64.rpm` |
+| `MatrixPlayer_0.2.1_amd64.AppImage` | Any distribution from 2024 on (glibc 2.39+), including Arch | `chmod +x MatrixPlayer_0.2.1_amd64.AppImage && ./MatrixPlayer_0.2.1_amd64.AppImage` |
+| `MatrixPlayer_0.2.1_amd64.deb` | Ubuntu 24.04+, Debian 13+, Mint 22+, Pop!_OS 24.04+ | `sudo apt install ./MatrixPlayer_0.2.1_amd64.deb` |
+| `MatrixPlayer-0.2.1-1.x86_64.rpm` | Fedora 40+, openSUSE Tumbleweed | `sudo dnf install ./MatrixPlayer-0.2.1-1.x86_64.rpm` |
 
 The AppImage ships its own GStreamer, with the plugins for every supported
 format. The `.deb` and `.rpm` packages use the system's GStreamer and pull in
