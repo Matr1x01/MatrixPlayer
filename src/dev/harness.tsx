@@ -243,7 +243,8 @@ const waveform = (points: number) =>
     const x = w / points;
     const env = 0.35 + 0.65 * Math.pow(Math.sin(Math.PI * Math.min(1, x * 1.08 + 0.02)), 0.55);
     const a = env * (0.6 + 0.4 * Math.abs(Math.sin(w * 1.7) * Math.cos(w * 0.37) + 0.3 * Math.sin(w * 0.11)));
-    return Math.round(Math.max(0.1, Math.min(1, a)) * 255);
+    // RMS levels, 0–255 for −60–0 dBFS.
+    return Math.round(((20 * Math.log10(Math.max(0.1, Math.min(1, a))) + 60) / 60) * 255);
   });
 
 // A synthetic analysis stream, so visualizers render in the harness.

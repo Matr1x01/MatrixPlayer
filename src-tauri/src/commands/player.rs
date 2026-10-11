@@ -85,8 +85,9 @@ pub async fn player_lyrics(state: State<'_, AppState>) -> AppResult<Option<Lyric
         .map_err(|e| AppError::Metadata(e.to_string()))
 }
 
-/// Peak levels (0–255) of the current track in `points` columns, for the
-/// waveform seek bar. The first request for a track decodes it.
+/// RMS levels (0–255 for −60–0 dBFS) of the current track in `points`
+/// columns, for the waveform seek bar. The first request for a track decodes
+/// it.
 #[tauri::command]
 pub async fn player_waveform(state: State<'_, AppState>, points: usize) -> AppResult<Option<Vec<u8>>> {
     let Some(track) = state.player.snapshot().await?.track else { return Ok(None) };

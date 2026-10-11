@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 
 import { formatTime } from '@/features/player/format';
 import { isSeekable, useSeekTarget } from '@/features/player/hooks';
@@ -11,38 +11,46 @@ import { trackKey } from './LyricsPanel';
 const BARS = 170;
 const cache = new Map<string, number[] | null>();
 
-/** Peak levels of the current track, decoded once by the core and cached. */
+/** RMS levels of the current track, decoded once by the core and cached. */
 function useWaveform(): number[] | null {
   const track = usePlayer((s) => s.track);
   const key = trackKey(track);
-  const [state, setState] = useState<{ key: string | null; peaks: number[] | null }>({ key: null, peaks: null });
+  const [state, setState] = useState<{ key: string | null; levels: number[] | null }>({ key: null, levels: null });
 
   useEffect(() => {
     if (!key) return;
     if (cache.has(key)) {
-      setState({ key, peaks: cache.get(key)! });
+      setState({ key, levels: cache.get(key)! });
       return;
     }
     let cancelled = false;
     void playerApi
       .waveform(BARS)
       .catch(() => null)
-      .then((peaks) => {
-        cache.set(key, peaks);
-        if (!cancelled) setState({ key, peaks });
+      .then((levels) => {
+        cache.set(key, levels);
+        if (!cancelled) setState({ key, levels });
       });
     return () => {
       cancelled = true;
     };
   }, [key]);
 
-  return state.key === key ? state.peaks : null;
+  return state.key === key ? state.levels : null;
 }
 
-/** Bar height (px) for a peak (0–255): a dB scale reads like the music. */
-function barHeight(peak: number): number {
-  const db = 20 * Math.log10(Math.max(peak, 1) / 255);
-  return 4 + Math.max(0, (db + 36) / 36) * 56;
+/**
+ * Bar heights (px) for RMS levels (0–255 for −60–0 dBFS), on a dB scale
+ * fitted to the track: from its quieter passages (at least 12 dB, at most
+ * 30 dB below its loudest) to its loudest. A fixed scale draws a loud,
+ * compressed master as a flat line, though its sections differ by a few dB.
+ */
+function barHeights(levels: number[]): number[] {
+  const db = levels.map((l) => (l / 255) * 60 - 60);
+  const top = Math.max(...db);
+  const audible = db.filter((d) => d > top - 30).sort((a, b) => a - b);
+  const floor = Math.min(audible[Math.floor(audible.length * 0.1)] ?? top, top - 12);
+  return db.map((d) => 4 + Math.max(0, (d - floor) / (top - floor)) * 56);
 }
 
 /** Seek over the track's waveform (Now Playing board): click or drag to seek. */
@@ -50,7 +58,8 @@ export function WaveformSeek() {
   const positionMs = usePlayer((s) => s.positionMs);
   const durationMs = usePlayer((s) => s.durationMs);
   const status = usePlayer((s) => s.status);
-  const peaks = useWaveform();
+  const levels = useWaveform();
+  const heights = useMemo(() => (levels?.length ? barHeights(levels) : null), [levels]);
   const area = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [scrub, setScrub] = useState<number | null>(null);
@@ -128,7 +137,7 @@ export function WaveformSeek() {
           <span
             key={i}
             className={i < played ? 'wb p' : 'wb'}
-            style={{ height: peaks ? barHeight(peaks[i] ?? 0) : 4, transitionDelay: peaks ? `${(i * 2) % 340}ms` : '0ms' }}
+            style={{ height: heights?.[i] ?? 4, transitionDelay: heights ? `${(i * 2) % 340}ms` : '0ms' }}
           />
         ))}
         <span className="wave-head" style={{ left: `${fraction * 100}%` }} />

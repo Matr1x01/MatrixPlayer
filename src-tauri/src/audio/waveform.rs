@@ -1,8 +1,10 @@
 //! Waveform overviews for the seek bar.
 //!
 //! A track is decoded once, as fast as the CPU allows and without touching
-//! the audio output, into peak levels over short blocks. The result is
-//! cached on disk keyed by the file's path, size and modification time.
+//! the audio output, into RMS levels over short blocks. RMS rather than peak:
+//! loud masters touch full scale every second or so, so peaks draw a flat
+//! bar, while RMS follows how loud each passage sounds. The result is cached
+//! on disk keyed by the file's path, size and modification time.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -18,6 +20,8 @@ use crate::error::{AppError, AppResult};
 /// Blocks per second kept before resampling to the requested width.
 const BLOCKS_PER_SECOND: u32 = 50;
 const MAX_POINTS: usize = 4000;
+/// The level byte 0; 255 is 0 dBFS, linear in dB between.
+const FLOOR_DB: f32 = -60.0;
 /// Gives up on files that decode absurdly slowly (a network mount, say).
 const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -31,11 +35,11 @@ impl WaveformCache {
         Ok(Self { dir })
     }
 
-    /// Peak levels (0–255, linear amplitude) of `path` in `points` columns.
+    /// RMS levels (0–255 for −60–0 dBFS) of `path` in `points` columns.
     /// Blocking: may decode the whole file.
     pub fn get(&self, path: &Path, points: usize) -> AppResult<Vec<u8>> {
         let points = points.clamp(1, MAX_POINTS);
-        let cached = self.dir.join(format!("{:016x}.peaks", key(path)?));
+        let cached = self.dir.join(format!("{:016x}.rms", key(path)?));
         let blocks = match std::fs::read(&cached) {
             Ok(blocks) if !blocks.is_empty() => blocks,
             _ => {
@@ -59,7 +63,7 @@ fn key(path: &Path) -> AppResult<u64> {
     Ok(hasher.finish())
 }
 
-/// Decodes `path` into one peak byte per 1/50 s.
+/// Decodes `path` into one level byte per 1/50 s.
 fn decode_blocks(path: &Path) -> AppResult<Vec<u8>> {
     let uri = crate::filesystem::path_to_uri(path)?;
     let pipeline = gst::Pipeline::builder().name("matrixplayer-waveform").build();
@@ -92,16 +96,16 @@ fn decode_blocks(path: &Path) -> AppResult<Vec<u8>> {
         }
     });
 
-    let peaks = Arc::new(Mutex::new(Peaks::default()));
+    let levels = Arc::new(Mutex::new(Levels::default()));
     {
-        let peaks = peaks.clone();
+        let levels = levels.clone();
         sink.connect("handoff", false, move |args| {
             let buffer = args[1].get::<gst::Buffer>().ok()?;
             let pad = args[2].get::<gst::Pad>().ok()?;
             let rate = pad.current_caps().and_then(|c| gst_audio::AudioInfo::from_caps(&c).ok()).map(|i| i.rate())?;
             let map = buffer.map_readable().ok()?;
             let samples = map.as_slice().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-            peaks.lock().unwrap().push(samples, rate);
+            levels.lock().unwrap().push(samples, rate);
             None
         });
     }
@@ -125,9 +129,9 @@ fn decode_blocks(path: &Path) -> AppResult<Vec<u8>> {
     let _ = pipeline.set_state(gst::State::Null);
     result?;
     let blocks = {
-        let mut peaks = peaks.lock().unwrap();
-        peaks.finish();
-        std::mem::take(&mut peaks.blocks)
+        let mut levels = levels.lock().unwrap();
+        levels.finish();
+        std::mem::take(&mut levels.blocks)
     };
     if blocks.is_empty() {
         return Err(AppError::Audio("The file contains no audio".into()));
@@ -136,17 +140,17 @@ fn decode_blocks(path: &Path) -> AppResult<Vec<u8>> {
 }
 
 #[derive(Default)]
-struct Peaks {
+struct Levels {
     blocks: Vec<u8>,
-    current: f32,
+    squares: f64,
     filled: u32,
 }
 
-impl Peaks {
+impl Levels {
     fn push(&mut self, samples: impl Iterator<Item = f32>, rate: u32) {
         let per_block = (rate / BLOCKS_PER_SECOND).max(1);
         for s in samples {
-            self.current = self.current.max(s.abs());
+            self.squares += f64::from(s * s);
             self.filled += 1;
             if self.filled == per_block {
                 self.finish();
@@ -156,20 +160,34 @@ impl Peaks {
 
     fn finish(&mut self) {
         if self.filled > 0 {
-            self.blocks.push((self.current.min(1.0) * 255.0).round() as u8);
-            self.current = 0.0;
+            self.blocks.push(level(self.squares / f64::from(self.filled)));
+            self.squares = 0.0;
             self.filled = 0;
         }
     }
 }
 
-/// Maximum over each of `points` equal spans of `blocks`.
+/// The level byte of a mean square.
+fn level(mean_square: f64) -> u8 {
+    let db = 10.0 * mean_square.log10() as f32;
+    (((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// The mean square of a level byte.
+fn mean_square(level: u8) -> f64 {
+    10f64.powf(f64::from(f32::from(level) / 255.0 * -FLOOR_DB + FLOOR_DB) / 10.0)
+}
+
+/// The RMS over each of `points` equal spans of `blocks`.
 fn resample(blocks: &[u8], points: usize) -> Vec<u8> {
     (0..points)
         .map(|i| {
             let start = i * blocks.len() / points;
             let end = ((i + 1) * blocks.len() / points).max(start + 1).min(blocks.len());
-            blocks.get(start..end).and_then(|s| s.iter().copied().max()).unwrap_or(0)
+            blocks
+                .get(start..end)
+                .map(|s| level(s.iter().map(|&b| mean_square(b)).sum::<f64>() / s.len() as f64))
+                .unwrap_or(0)
         })
         .collect()
 }
@@ -188,15 +206,18 @@ mod tests {
 
         let first = cache.get(&track, 100).unwrap();
         assert_eq!(first.len(), 100);
-        // The fixture is a steady sine at 0.2 of full scale.
-        assert!(first.iter().all(|p| (48..=54).contains(p)), "{first:?}");
+        // The fixture is a steady sine at 0.2 of full scale: RMS −17 dBFS.
+        // Its last block is under one cycle of the sine, so it reads apart.
+        assert!(first[..99].iter().all(|p| (181..=185).contains(p)), "{first:?}");
         assert_eq!(std::fs::read_dir(dir.path().join("waves")).unwrap().count(), 1);
         assert_eq!(cache.get(&track, 100).unwrap(), first, "the cached copy matches");
     }
 
     #[test]
-    fn resampling_keeps_the_loudest_block_of_each_span() {
-        assert_eq!(resample(&[1, 9, 2, 3, 8, 4], 3), [9, 3, 8]);
+    fn resampling_takes_the_rms_of_each_span() {
+        assert_eq!(resample(&[200, 200, 90, 90], 2), [200, 90]);
+        // Full scale and silence average to half the energy: −3 dB.
+        assert_eq!(resample(&[255, 0], 1), [242]);
         assert_eq!(resample(&[5, 7], 4), [5, 5, 7, 7]);
     }
 
