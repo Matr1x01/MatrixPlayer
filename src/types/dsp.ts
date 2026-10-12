@@ -143,8 +143,12 @@ export interface LyricLine {
 }
 
 export interface Lyrics {
-  source: 'file' | 'embedded';
+  source: 'file' | 'embedded' | 'online';
   fileName: string | null;
+  /** Where online lyrics came from (LRCLIB), to credit it. */
+  provider: string | null;
+  /** The track has no words; `lines` is empty. */
+  instrumental: boolean;
   synced: boolean;
   offsetMs: number;
   lines: LyricLine[];

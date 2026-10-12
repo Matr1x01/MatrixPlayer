@@ -17,7 +17,9 @@ use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
 
+pub mod lrclib;
 pub mod lyrics;
+pub mod online_lyrics;
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]

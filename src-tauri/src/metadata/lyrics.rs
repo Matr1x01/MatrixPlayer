@@ -1,8 +1,9 @@
-//! Lyrics: a `.lrc` file next to the track, or lyrics embedded in its tags.
+//! Lyrics: a `.lrc` file next to the track, or lyrics embedded in its tags
+//! (and failing those, lyrics found online: see `online_lyrics`).
 //!
-//! Timed lyrics use the LRC format, whether they come from a sidecar file or
-//! were embedded as LRC text (as many taggers do). Anything without
-//! timestamps is shown as plain text.
+//! Timed lyrics use the LRC format, whether they come from a sidecar file,
+//! were embedded as LRC text (as many taggers do) or were found online.
+//! Anything without timestamps is shown as plain text.
 
 use std::path::{Path, PathBuf};
 
@@ -16,6 +17,7 @@ use serde::Serialize;
 pub enum LyricsSource {
     File,
     Embedded,
+    Online,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -33,10 +35,29 @@ pub struct Lyrics {
     pub source: LyricsSource,
     /// The sidecar's file name, for lyrics from a file.
     pub file_name: Option<String>,
+    /// Where lyrics found online came from, to credit it.
+    pub provider: Option<String>,
+    /// The track has no words (as far as the source knows); `lines` is empty.
+    pub instrumental: bool,
     pub synced: bool,
     /// The `[offset:]` the file declared (ms, positive = earlier).
     pub offset_ms: i64,
     pub lines: Vec<LyricLine>,
+}
+
+impl Lyrics {
+    /// A track known to have no words.
+    pub fn instrumental(source: LyricsSource) -> Self {
+        Self {
+            source,
+            file_name: None,
+            provider: None,
+            instrumental: true,
+            synced: false,
+            offset_ms: 0,
+            lines: Vec::new(),
+        }
+    }
 }
 
 /// Lyrics for the audio file at `path`: a sidecar `.lrc` wins over tags.
@@ -119,7 +140,15 @@ pub fn parse(text: &str, source: LyricsSource) -> Option<Lyrics> {
             .into_iter()
             .map(|(t, text)| LyricLine { time_ms: Some((t - offset_ms).max(0) as u64), text })
             .collect();
-        return Some(Lyrics { source, file_name: None, synced: true, offset_ms, lines });
+        return Some(Lyrics {
+            source,
+            file_name: None,
+            provider: None,
+            instrumental: false,
+            synced: true,
+            offset_ms,
+            lines,
+        });
     }
 
     // Plain text: trim blank lines at the ends, keep blank lines between
@@ -135,7 +164,15 @@ pub fn parse(text: &str, source: LyricsSource) -> Option<Lyrics> {
     while lines.last().is_some_and(|l| l.text.is_empty()) {
         lines.pop();
     }
-    (!lines.is_empty()).then_some(Lyrics { source, file_name: None, synced: false, offset_ms: 0, lines })
+    (!lines.is_empty()).then_some(Lyrics {
+        source,
+        file_name: None,
+        provider: None,
+        instrumental: false,
+        synced: false,
+        offset_ms: 0,
+        lines,
+    })
 }
 
 /// `mm:ss`, `mm:ss.xx` or `mm:ss.xxx` (also with `:` before the fraction).

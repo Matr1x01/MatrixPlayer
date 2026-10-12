@@ -135,3 +135,79 @@ fn encode(description: &str, path: &Path, tags: Option<&str>) {
     }
     pipeline.set_state(gst::State::Null).unwrap();
 }
+
+/// A request an [`HttpMock`] received.
+#[derive(Debug, Clone)]
+pub struct HttpRequest {
+    pub at: Instant,
+    pub path: String,
+    pub query: Vec<(String, String)>,
+    pub user_agent: Option<String>,
+}
+
+impl HttpRequest {
+    pub fn param(&self, name: &str) -> Option<&str> {
+        self.query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+}
+
+/// An HTTP answer: status, content type and body.
+pub type HttpAnswer = (u16, &'static str, String, Vec<(&'static str, String)>);
+
+/// A local HTTP server for tests of online lookups, answering each request
+/// with `answer` and keeping every request it got.
+pub struct HttpMock {
+    pub base: String,
+    pub requests: std::sync::Arc<Mutex<Vec<HttpRequest>>>,
+}
+
+impl HttpMock {
+    pub async fn start(answer: impl Fn(&HttpRequest) -> HttpAnswer + Send + Sync + 'static) -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let requests = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let log = requests.clone();
+        let answer = std::sync::Arc::new(answer);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let (log, answer) = (log.clone(), answer.clone());
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") && socket.read(&mut byte).await.is_ok_and(|n| n == 1) {
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head);
+                    let target = head.split_whitespace().nth(1).unwrap_or("/");
+                    let url = url::Url::parse(&format!("http://mock{target}")).unwrap();
+                    let user_agent = head.lines().find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("user-agent").then(|| value.trim().to_owned())
+                    });
+                    let request = HttpRequest {
+                        at: Instant::now(),
+                        path: url.path().to_owned(),
+                        query: url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect(),
+                        user_agent,
+                    };
+                    let (status, content_type, body, headers) = answer(&request);
+                    log.lock().unwrap().push(request);
+                    let extra: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+                    let response = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        Self { base, requests }
+    }
+
+    pub fn requests(&self) -> Vec<HttpRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}

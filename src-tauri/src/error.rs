@@ -38,6 +38,10 @@ pub enum AppError {
 
     #[error("The audio player is not running")]
     PlayerUnavailable,
+
+    /// An online service could not be asked (no connection, busy, …).
+    #[error("{0}")]
+    Online(String),
 }
 
 impl AppError {
@@ -52,6 +56,7 @@ impl AppError {
             Self::Database(_) | Self::Migration(_) => "database",
             Self::Io(_) => "io",
             Self::PlayerUnavailable => "playerUnavailable",
+            Self::Online(_) => "online",
         }
     }
 }

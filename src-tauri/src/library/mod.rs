@@ -12,7 +12,7 @@ mod paths;
 pub mod playlists;
 pub mod query;
 mod scan;
-mod text;
+pub(crate) mod text;
 mod walk;
 
 use std::collections::BTreeSet;

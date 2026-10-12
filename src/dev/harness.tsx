@@ -147,6 +147,7 @@ const prefs: UiPreferences = {
   interfaceScale: 1,
   trackNotifications: true,
   restoreSession: true,
+  onlineLyrics: true,
   logRetentionDays: 7,
 };
 
@@ -225,6 +226,8 @@ const devices: OutputDevices = {
 const lyrics: Lyrics = {
   source: 'file',
   fileName: '02 - Isobar.lrc',
+  provider: null,
+  instrumental: false,
   synced: true,
   offsetMs: 120,
   lines: [

@@ -6,7 +6,9 @@ use tauri::State;
 
 use crate::error::{AppError, AppResult};
 use crate::metadata::lyrics::{self, Lyrics};
+use crate::metadata::online_lyrics;
 use crate::player::{PlayerCommand, PlayerSnapshot, RepeatMode};
+use crate::preferences;
 use crate::state::AppState;
 
 #[tauri::command]
@@ -76,13 +78,32 @@ pub async fn player_set_shuffle(state: State<'_, AppState>, enabled: bool) -> Ap
     state.player.command(PlayerCommand::SetShuffle(enabled)).await
 }
 
-/// Lyrics of the current track: its `.lrc` file, or lyrics in its tags.
+/// Lyrics of the current track: its `.lrc` file, lyrics in its tags, or
+/// (unless turned off) LRCLIB's. An error only when LRCLIB could not be
+/// asked; asking again may work.
 #[tauri::command]
 pub async fn player_lyrics(state: State<'_, AppState>) -> AppResult<Option<Lyrics>> {
     let Some(track) = state.player.snapshot().await?.track else { return Ok(None) };
-    tauri::async_runtime::spawn_blocking(move || lyrics::load(&track.path))
+    let path = track.path.clone();
+    let own = tauri::async_runtime::spawn_blocking(move || lyrics::load(&path))
         .await
-        .map_err(|e| AppError::Metadata(e.to_string()))
+        .map_err(|e| AppError::Metadata(e.to_string()))?;
+    if own.is_some() {
+        return Ok(own);
+    }
+    match &state.lrclib {
+        Some(lrclib) if preferences::load(&state.db).await?.online_lyrics => {
+            online_lyrics::find(&state.db, lrclib, &track).await
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Forgets the lyrics downloaded so far (they are looked up again when
+/// next shown). Returns how many tracks' were forgotten.
+#[tauri::command]
+pub async fn lyrics_forget_downloaded(state: State<'_, AppState>) -> AppResult<u64> {
+    online_lyrics::forget(&state.db).await
 }
 
 /// RMS levels (0–255 for −60–0 dBFS) of the current track in `points`

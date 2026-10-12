@@ -19,6 +19,8 @@ export interface UiPreferences {
   trackNotifications: boolean;
   /** At startup, bring back the last queue, paused where it was. */
   restoreSession: boolean;
+  /** Look lyrics up on LRCLIB for tracks without their own. */
+  onlineLyrics: boolean;
   /** How long log files are kept, 1–90 days. */
   logRetentionDays: number;
 }
