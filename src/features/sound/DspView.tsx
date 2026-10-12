@@ -419,7 +419,7 @@ export function DspView() {
                     <span className="mono w-[60px] text-right text-[11.5px]">{formatGain(settings.replayGainFallbackDb)}</span>
                   </div>
                 </Setting>
-                <Setting id="dsp-limiter" title="Clipping prevention" hint="Uses ReplayGain peak values; a limiter catches the rest">
+                <Setting id="dsp-clipping" title="Clipping prevention" hint="ReplayGain never raises a track past its tagged peak">
                   <Toggle
                     on={settings.clippingPrevention}
                     onChange={(clippingPrevention) => patchDsp({ clippingPrevention })}
@@ -427,9 +427,16 @@ export function DspView() {
                   />
                 </Setting>
                 <Setting
+                  id="dsp-limiter"
+                  title="Limiter"
+                  hint="Holds peaks under −0.5 dBTP at the end of the chain. Off: boosts are heard in full, and may clip"
+                >
+                  <Toggle on={settings.limiter} onChange={(limiter) => patchDsp({ limiter })} label="Limiter" />
+                </Setting>
+                <Setting
                   column
                   title="EQ boost allowance"
-                  hint="Boost auto preamp lets through before lowering the level; the limiter catches the peaks"
+                  hint="Boost auto preamp lets through before lowering the level"
                 >
                   <div className="flex items-center gap-3">
                     <div className="flex-1">

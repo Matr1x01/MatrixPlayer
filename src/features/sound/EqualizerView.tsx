@@ -67,6 +67,7 @@ export function EqualizerView() {
   const settings = useDsp((s) => s.settings);
   const presets = useDsp((s) => s.presets);
   const limiting = useDsp((s) => s.status.limiting);
+  const clipping = useDsp((s) => s.status.clipping);
   const sampleRate = useDsp((s) => s.status.sampleRate);
   const [selected, setSelected] = useState<number | null>(null);
   const [spectrum, setSpectrum] = useState(true);
@@ -76,6 +77,7 @@ export function EqualizerView() {
   // Solved and designed by the core, at the playing stream's rate.
   const { response, current } = useEqResponse(curve, sampleRate);
   const boost = response?.maxBoostDb ?? 0;
+  const addedLoudness = response?.loudnessDb ?? 0;
 
   if (!settings || !curve) {
     return (
@@ -92,9 +94,10 @@ export function EqualizerView() {
 
   const active = settings.eqEnabled && !settings.bypass;
   const allowance = settings.autoPreamp ? settings.autoPreampAllowanceDb : 0;
-  const preamp = settings.preampDb - (settings.autoPreamp ? Math.max(0, boost - allowance) : 0);
-  // Peaks the allowance lets through are the limiter's by design.
-  const mayClip = active && boost + preamp > allowance + 0.05;
+  // As the core does it: the loudness the curve adds, or the boost beyond the allowance, whichever is more.
+  const preamp = settings.preampDb - (settings.autoPreamp ? Math.max(0, boost - allowance, addedLoudness) : 0);
+  // Any boost left after the preamp can take a full-scale master over: clipped, or limited when the limiter is on.
+  const mayClip = active && boost + preamp > 0.05;
   const preset = presets.find((p) => p.name === settings.preset);
   const modified = preset ? !sameCurve(preset.curve, curve) : false;
   const bandSel = selected != null && selected < (curve.mode === 'parametric' ? curve.parametric.length : 99) ? selected : null;
@@ -231,10 +234,18 @@ export function EqualizerView() {
         <span className="t3">
           Preamp <span style={{ color: 'var(--tx)' }}>{formatGain(active ? preamp : 0)}</span>
         </span>
-        {limiting || mayClip ? (
-          <span className="flex items-center gap-1.5" style={{ color: 'var(--warn)' }} data-tip="The limiter keeps peaks below full scale">
+        {clipping || limiting || mayClip ? (
+          <span
+            className="flex items-center gap-1.5"
+            style={{ color: 'var(--warn)' }}
+            data-tip={
+              settings.limiter
+                ? 'The limiter keeps peaks below full scale'
+                : 'Boosts take loud passages over full scale: turn on the limiter or auto preamp, or lower the preamp'
+            }
+          >
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--warn)' }} />
-            {limiting ? 'Limiting' : 'May clip'}
+            {clipping ? 'Clipping' : limiting ? 'Limiting' : settings.limiter ? 'May limit' : 'May clip'}
           </span>
         ) : (
           <span className="flex items-center gap-1.5" style={{ color: 'var(--ok)' }}>
@@ -428,11 +439,20 @@ export function EqualizerView() {
                   <span className="font-semibold">Auto preamp</span>
                   <span className="t3 text-[11.5px]">
                     {settings.autoPreampAllowanceDb > 0
-                      ? `Lowers the level for boosts over ${formatGain(settings.autoPreampAllowanceDb)}`
+                      ? `Takes back what the EQ adds to the level, and boosts over ${formatGain(settings.autoPreampAllowanceDb)}`
                       : 'Keeps peak boost below 0 dBFS'}
                   </span>
                 </span>
                 <Toggle on={settings.autoPreamp} onChange={(autoPreamp) => patchDsp({ autoPreamp })} label="Auto preamp" />
+              </label>
+              <label className="flex items-center justify-between gap-2.5">
+                <span className="flex flex-col gap-px">
+                  <span className="font-semibold">Limiter</span>
+                  <span className="t3 text-[11.5px]">
+                    {settings.limiter ? 'Catches the peaks boosts push over full scale' : 'Off: boosts are heard in full, and may clip'}
+                  </span>
+                </span>
+                <Toggle on={settings.limiter} onChange={(limiter) => patchDsp({ limiter })} label="Limiter" />
               </label>
             </div>
           </section>

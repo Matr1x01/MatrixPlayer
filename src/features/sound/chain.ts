@@ -116,8 +116,14 @@ export function useChain(): ChainStage[] {
       {
         key: 'limiter',
         name: 'Limiter',
-        value: dspStatus.limiting ? 'Limiting' : 'Idle · −0.5 dBTP',
-        state: dspStatus.limiting ? 'warn' : 'on',
+        value: settings.limiter
+          ? dspStatus.limiting
+            ? 'Limiting'
+            : 'Idle · −0.5 dBTP'
+          : dspStatus.clipping
+            ? 'Off · clipping'
+            : 'Off',
+        state: dspStatus.limiting || dspStatus.clipping ? 'warn' : settings.limiter ? 'on' : 'off',
       },
     );
   }

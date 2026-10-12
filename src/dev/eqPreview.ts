@@ -99,6 +99,27 @@ export function maxBoostDb(bands: EqBand[], fs = DRAW_RATE): number {
   return max;
 }
 
+/** K-weighting (ITU-R BS.1770): what loudness hears, as the core weighs it. */
+const K_WEIGHTING: EqBand[] = [
+  { enabled: true, kind: 'highShelf', freq: 1681.97, gainDb: 4, q: 0.7072 },
+  { enabled: true, kind: 'highPass', freq: 38.135, gainDb: 0, q: 0.5003 },
+];
+
+/** Loudness the filters add to pink noise (dB, never below 0), as auto preamp counts it. */
+export function addedLoudnessDb(bands: EqBand[], fs = DRAW_RATE): number {
+  if (!bands.length) return 0;
+  const [eq, k] = [responseOf(bands, fs), responseOf(K_WEIGHTING, fs)];
+  let [flat, filtered] = [0, 0];
+  for (let i = 0; i <= 720; i++) {
+    const f = 20 * Math.pow(1000, i / 240);
+    if (f >= Math.min(20_000, fs * 0.499)) break;
+    const heard = Math.pow(10, k(f) / 10);
+    flat += heard;
+    filtered += heard * Math.pow(10, eq(f) / 10);
+  }
+  return Math.max(0, 10 * Math.log10(filtered / flat));
+}
+
 /** What `dsp_eq_response` would answer, roughly. */
 export function previewResponse(curve: EqCurve, freqs: number[]): EqResponse {
   const total = responseOf(curveFilters(curve));
@@ -107,5 +128,6 @@ export function previewResponse(curve: EqCurve, freqs: number[]): EqResponse {
     total: freqs.map(total),
     bands: bands.map((r) => freqs.map(r)),
     maxBoostDb: maxBoostDb(curveFilters(curve)),
+    loudnessDb: addedLoudnessDb(curveFilters(curve)),
   };
 }

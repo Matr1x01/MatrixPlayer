@@ -147,6 +147,7 @@ const prefs: UiPreferences = {
   interfaceScale: 1,
   trackNotifications: true,
   restoreSession: true,
+  onlineLyrics: true,
   logRetentionDays: 7,
 };
 
@@ -180,8 +181,9 @@ const dspSettings: DspSettings = {
   b: flatCurve,
   preset: 'Warm Headphone',
   preampDb: 0,
-  autoPreamp: true,
+  autoPreamp: false,
   autoPreampAllowanceDb: 3,
+  limiter: false,
   balance: 0,
   width: 1.15,
   crossfeed: false,
@@ -207,7 +209,7 @@ const dspState = (): DspState => ({
     graphic('Acoustic', [3, 2.5, 1.5, 0.5, 1, 1, 2, 2.5, 2, 1]),
     graphic('Classical', [3, 2, 1, 0, 0, 0, -1, -1.5, -2, -3]),
   ],
-  status: { replayGainSource: 'album', replayGainDb: -6.2, limiting: false, sampleRate: 96000, channels: 2 },
+  status: { replayGainSource: 'album', replayGainDb: -6.2, limiting: false, clipping: false, sampleRate: 96000, channels: 2 },
 });
 const devices: OutputDevices = {
   backend: 'pipeWire',
@@ -224,6 +226,8 @@ const devices: OutputDevices = {
 const lyrics: Lyrics = {
   source: 'file',
   fileName: '02 - Isobar.lrc',
+  provider: null,
+  instrumental: false,
   synced: true,
   offsetMs: 120,
   lines: [

@@ -157,11 +157,47 @@ pub fn max_boost_db(coeffs: &[Coeffs], centres: &[f64], fs: f64) -> f64 {
         .max(0.0)
 }
 
+/// How much louder the filters `coeffs` make music (dB, 0 when they make it
+/// quieter): the change in loudness of pink noise, K-weighted as in ITU-R
+/// BS.1770, from 20 Hz to 20 kHz (or Nyquist). A narrow boost adds little;
+/// a boost across the whole range adds all of it.
+pub fn added_loudness_db(coeffs: &[Coeffs], fs: f64) -> f64 {
+    if coeffs.is_empty() {
+        return 0.0;
+    }
+    let weight = |kind, freq, gain_db, q| Coeffs::cookbook(&EqBand { enabled: true, kind, freq, gain_db, q }, fs);
+    let k = [weight(FilterKind::HighShelf, 1681.97, 4.0, 0.7072), weight(FilterKind::HighPass, 38.135, 0.0, 0.5003)];
+    let top = (0.499 * fs).min(20_000.0);
+    // Pink noise has the same power in every log step.
+    let (mut flat, mut filtered) = (0.0, 0.0);
+    for f in (0u32..).map(|i| 20.0 * 1000f64.powf(f64::from(i) / 240.0)).take_while(|f| *f < top) {
+        let heard = 10f64.powf(k.iter().map(|c| c.magnitude_db(f, fs)).sum::<f64>() / 10.0);
+        flat += heard;
+        filtered += heard * 10f64.powf(coeffs.iter().map(|c| c.magnitude_db(f, fs)).sum::<f64>() / 10.0);
+    }
+    (10.0 * (filtered / flat).log10()).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const FS: f64 = 48_000.0;
+
+    #[test]
+    fn added_loudness_counts_broad_boosts_in_full_and_narrow_ones_little() {
+        let coeffs = |bands: &[EqBand]| bands.iter().map(|b| Coeffs::for_band(b, FS)).collect::<Vec<_>>();
+        let broad = [
+            EqBand { enabled: true, kind: FilterKind::LowShelf, freq: 20_000.0, gain_db: 6.0, q: 0.7 },
+            EqBand::peak(1000.0, 0.0, 1.0),
+        ];
+        let all = added_loudness_db(&coeffs(&broad), FS);
+        assert!((all - 6.0).abs() < 0.5, "a boost below 20 kHz adds nearly all of it: {all}");
+        let narrow = added_loudness_db(&coeffs(&[EqBand::peak(62.0, 6.0, 1.4)]), FS);
+        assert!(narrow > 0.0 && narrow < 1.0, "a bass band adds little loudness: {narrow}");
+        assert_eq!(added_loudness_db(&coeffs(&[EqBand::peak(1000.0, -6.0, 1.0)]), FS), 0.0, "cuts add none");
+        assert_eq!(added_loudness_db(&[], FS), 0.0);
+    }
 
     #[test]
     fn peak_filters_hit_their_gain_at_the_centre_and_stay_flat_far_away() {

@@ -9,6 +9,7 @@ use crate::database::Database;
 use crate::dsp::service::DspService;
 use crate::error::AppResult;
 use crate::library::LibraryHandle;
+use crate::metadata::lrclib::Lrclib;
 use crate::player::output_mode::OutputMode;
 use crate::player::{InsertMode, PlayerCommand, PlayerHandle};
 
@@ -21,6 +22,8 @@ pub struct AppState {
     pub db: Database,
     /// Bit-perfect and exclusive playback, and which device plays.
     pub output_mode: Arc<OutputMode>,
+    /// Online lyrics; `None` if no HTTP client could be set up.
+    pub lrclib: Option<Arc<Lrclib>>,
 }
 
 impl AppState {

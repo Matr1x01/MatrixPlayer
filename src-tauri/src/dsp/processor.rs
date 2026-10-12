@@ -8,7 +8,9 @@
 //! Stages that are neutral are skipped outright, so with everything off and
 //! the volume at 100% the samples pass through untouched, full-scale peaks
 //! included; they only come out 1.5 ms later, the limiter's constant
-//! look-ahead. (A probe cannot add samples of its own, so the last
+//! look-ahead. The limiter only limits when it is switched on: otherwise a
+//! boost is heard in full, and what goes over full scale is reported as
+//! clipping. (A probe cannot add samples of its own, so the last
 //! look-ahead of a stream never leaves the delay line: at the end of the
 //! queue, or at a gapless join to another sample rate, 1.5 ms is lost.) ReplayGain values come from the tag events
 //! that travel with the audio, so at a gapless join the new track's gain
@@ -37,6 +39,9 @@ const VOLUME_SMOOTH_S: f64 = 0.01;
 /// Closer than this, the smoothed volume lands exactly on its target
 /// (−120 dB: far below anything audible), so unity and mute are exact.
 const VOLUME_SNAP: f64 = 1e-6;
+/// Clipping is reported until this long after the last sample over full
+/// scale, so the indicator does not flicker with every buffer.
+const CLIP_HOLD_S: f64 = 0.5;
 
 /// The EQ curve being heard.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +58,7 @@ pub struct Params {
     pub eq: Option<EqSpec>,
     pub preamp_db: f64,
     /// With auto preamp on, the EQ boost allowed before the level is lowered
-    /// by the rest of the boost.
+    /// by the rest of the boost (and at least by the loudness the EQ adds).
     pub auto_preamp_allowance_db: Option<f64>,
     pub balance: f64,
     pub width: f64,
@@ -63,6 +68,8 @@ pub struct Params {
     pub replay_gain_preamp_db: f64,
     pub replay_gain_fallback_db: f64,
     pub clipping_prevention: bool,
+    /// Limit the true peak (otherwise nothing is limited).
+    pub limiter: bool,
     /// Fade in after seeks.
     pub soft_fades: bool,
 }
@@ -80,6 +87,7 @@ impl Default for Params {
             replay_gain_preamp_db: 0.0,
             replay_gain_fallback_db: 0.0,
             clipping_prevention: true,
+            limiter: false,
             soft_fades: false,
         }
     }
@@ -113,13 +121,23 @@ pub struct DspStatus {
     pub replay_gain_db: f64,
     /// The limiter caught overs recently.
     pub limiting: bool,
+    /// Samples went over full scale recently (the limiter is off, or could
+    /// not catch them): the output clips them.
+    pub clipping: bool,
     pub sample_rate: u32,
     pub channels: u32,
 }
 
 impl Default for DspStatus {
     fn default() -> Self {
-        Self { replay_gain_source: RgSource::Off, replay_gain_db: 0.0, limiting: false, sample_rate: 0, channels: 0 }
+        Self {
+            replay_gain_source: RgSource::Off,
+            replay_gain_db: 0.0,
+            limiting: false,
+            clipping: false,
+            sample_rate: 0,
+            channels: 0,
+        }
     }
 }
 
@@ -212,9 +230,12 @@ pub struct Processor {
     fade_target: f64,
     fade_step: f64,
     limiter: Limiter,
-    /// Something upstream of the limiter can push peaks up (a boost, the
-    /// EQ, a wider image); otherwise it only delays the samples.
+    /// The limiter is on, and something upstream of it can push peaks up
+    /// (a boost, the EQ, a wider image); otherwise it only delays the
+    /// samples.
     limiter_needed: bool,
+    /// Frames left before clipping is no longer reported.
+    clip_hold: usize,
     /// The volume heard now, gliding towards the shared target.
     volume_now: f64,
     volume_coeff: f64,
@@ -244,6 +265,7 @@ impl Processor {
             fade_step: 0.0,
             limiter: Limiter::new(48_000.0, 2),
             limiter_needed: false,
+            clip_hold: 0,
             volume_now: 1.0,
             volume_coeff: 1.0,
             fresh: true,
@@ -340,7 +362,8 @@ impl Processor {
         }
         // A gain ramping down from a boost can still push this buffer over,
         // and so can the crossfeed while it glides out.
-        let limiter_on = self.limiter_needed || self.gain_now > 1.0 || (ch == 2 && self.crossfeed.running());
+        let limiter_on = self.params.limiter
+            && (self.limiter_needed || self.gain_now > 1.0 || (ch == 2 && self.crossfeed.running()));
 
         // Static gain, ramped towards its target.
         let ramp_step = 1.0 / (GAIN_RAMP_S * self.rate);
@@ -389,6 +412,11 @@ impl Processor {
         self.limiter.process(samples, limiter_on);
         self.apply_volume(samples);
         self.flush_denormals();
+        if samples.iter().any(|s| s.abs() > 1.0) {
+            self.clip_hold = (CLIP_HOLD_S * self.rate) as usize;
+        } else {
+            self.clip_hold = self.clip_hold.saturating_sub(frames);
+        }
 
         let rt_end = pts.and_then(|pts| {
             let duration = gst::ClockTime::from_nseconds((frames as f64 / self.rate * 1e9) as u64);
@@ -547,24 +575,33 @@ impl Processor {
         {
             rg_linear = ceiling / peak;
         }
-        // Auto preamp takes back only the boost beyond the allowance, and
-        // the same for every track, so ReplayGain's levels stay matched.
-        let boost = self.eq.max_boost_db();
-        let auto_db = p.auto_preamp_allowance_db.map_or(0.0, |allowance| (boost - allowance).max(0.0));
+        // Auto preamp takes back the loudness the EQ adds, and the boost
+        // beyond the allowance, whichever is more; the same for every track,
+        // so ReplayGain's levels stay matched. A boost across the whole range
+        // only makes everything louder, and on a master already at full
+        // scale it would keep the limiter busy (an EQ with every slider at
+        // +6 dB held it 1 to 5 dB down most of the time); taken back in full
+        // it changes nothing, as it should. A narrow boost adds little
+        // loudness, and lets only the allowance through to the limiter.
+        let lift = self.eq.lift();
+        let auto_db = p
+            .auto_preamp_allowance_db
+            .map_or(0.0, |allowance| (lift.peak_db - allowance).max(lift.loudness_db).max(0.0));
         self.gain_target = rg_linear * db_to_linear(p.preamp_db - auto_db);
         // The EQ counts even when it only cuts: shifting phases can raise
         // peaks, and so can the crossfeed, adding up opposite edges of the
         // two channels (see `process`). Balance, fades and a narrower image
         // only lower them; width and crossfeed only touch stereo.
         let stereo = self.channels == 2;
-        self.limiter_needed =
-            self.gain_target > 1.0 || self.eq.engaged() || (stereo && (p.width > 1.0 || p.crossfeed.is_some()));
+        self.limiter_needed = p.limiter
+            && (self.gain_target > 1.0 || self.eq.engaged() || (stereo && (p.width > 1.0 || p.crossfeed.is_some())));
         self.status.replay_gain_source = source;
         self.status.replay_gain_db = linear_to_db(rg_linear);
     }
 
     fn publish_status(&mut self) {
         self.status.limiting = self.limiter.take_limited() > 0;
+        self.status.clipping = self.clip_hold > 0;
         let changed = {
             let mut shared = self.shared.status.lock().unwrap();
             let changed = *shared != self.status;
@@ -786,10 +823,41 @@ mod tests {
 
     #[test]
     fn the_limiter_keeps_boosted_signals_below_full_scale() {
-        let mut p = processor(Params { preamp_db: 12.0, ..Params::default() });
+        let mut p = processor(Params { preamp_db: 12.0, limiter: true, ..Params::default() });
         let mut samples = sine(48_000, 0.9);
         p.process(&mut samples, None);
         let peak = samples.iter().fold(0.0f64, |m, s| m.max(s.abs()));
+        assert!(peak <= CEILING + 1e-12, "peak {peak}");
+        assert!(p.status.limiting && !p.status.clipping);
+    }
+
+    /// With the limiter off (as by default) an EQ boost is heard as set,
+    /// even where it takes a loud signal over full scale; that is reported
+    /// as clipping, and stops being reported once it stops.
+    #[test]
+    fn with_the_limiter_off_a_boost_is_heard_in_full_and_its_clipping_reported() {
+        let shared = Arc::new(Shared::new());
+        shared.set_params(Params { eq: curve(vec![EqBand::peak(440.0, 6.0, 1.0)]), ..Params::default() });
+        let mut p = processor_on(&shared, 2);
+        let mut samples = sine(48_000, 0.9);
+        p.process(&mut samples, None);
+        let peak = samples[48_000..].iter().fold(0.0f64, |m, s| m.max(s.abs()));
+        assert!((linear_to_db(peak / 0.9) - 6.0).abs() < 0.05, "boosted by {:+.2} dB", linear_to_db(peak / 0.9));
+        assert!(p.status.clipping && !p.status.limiting);
+
+        // Quiet enough for the boost to fit: no longer clipping, after the
+        // hold. Buffers as GStreamer hands them over.
+        for block in sine(48_000, 0.2).chunks(2 * 1024) {
+            p.process(&mut block.to_vec(), None);
+        }
+        assert!(!p.status.clipping);
+
+        // Switched on, the limiter catches what the boost takes over.
+        let limited = Params { limiter: true, ..shared.params.lock().unwrap().clone() };
+        shared.set_params(limited);
+        let mut samples = sine(48_000, 0.9);
+        p.process(&mut samples, None);
+        let peak = samples[24_000..].iter().fold(0.0f64, |m, s| m.max(s.abs()));
         assert!(peak <= CEILING + 1e-12, "peak {peak}");
         assert!(p.status.limiting);
     }
@@ -824,8 +892,15 @@ mod tests {
             auto_preamp_allowance_db: Some(3.0),
             ..Params::default()
         };
+        // Within the allowance, only the loudness the band adds to music as
+        // a whole is taken back: it stands out by all of its 2 dB.
         let measured = gain_at_1k(boost(2.0));
-        assert!((measured - 2.0).abs() < 0.05, "a boost within the allowance is heard in full: {measured}");
+        let mut p = processor(boost(2.0));
+        p.process(&mut [], None);
+        let added = p.eq.lift().loudness_db;
+        assert!(added > 0.2 && added < 0.5, "a 1 kHz band adds a little loudness: {added}");
+        assert!((measured - (2.0 - added)).abs() < 0.05, "a boost within the allowance: {measured}");
+        assert!((gain_at(boost(2.0), 1000.0) - gain_at(boost(2.0), 16_000.0) - 2.0).abs() < 0.05, "stands out by 2 dB");
         let measured = gain_at_1k(boost(8.0));
         assert!((measured - 3.0).abs() < 0.05, "the rest of the boost is taken back: {measured}");
         let off = Params { auto_preamp_allowance_db: None, ..boost(8.0) };
@@ -834,6 +909,60 @@ mod tests {
         let strict = Params { auto_preamp_allowance_db: Some(0.0), ..boost(8.0) };
         let measured = gain_at_1k(strict);
         assert!(measured.abs() < 0.05, "no allowance keeps the peak at unity: {measured}");
+    }
+
+    /// Steady-state gain (dB) the processor applies to a sine at `freq`,
+    /// from its RMS level: a high tone's samples miss its peaks.
+    fn gain_at(params: Params, freq: f64) -> f64 {
+        let mut p = processor(params);
+        let input: Vec<f64> = (0..24_000)
+            .flat_map(|n| {
+                let v = 0.1 * (2.0 * std::f64::consts::PI * freq * n as f64 / 48_000.0).sin();
+                [v, v]
+            })
+            .collect();
+        let mut output = input.clone();
+        p.process(&mut output, None);
+        let rms = |s: &[f64]| (s.iter().map(|v| v * v).sum::<f64>() / s.len() as f64).sqrt();
+        linear_to_db(rms(&output[24_000..]) / rms(&input[24_000..]))
+    }
+
+    fn graphic_curve(gains: [f64; 10]) -> Option<EqSpec> {
+        graphic(gains, AbSlot::A)
+    }
+
+    /// Every slider shapes its own band: against a tone four octaves away,
+    /// the band's centre moves by what the slider says, with auto preamp
+    /// on as it is by default.
+    #[test]
+    fn each_graphic_band_changes_the_tone_by_its_slider() {
+        use crate::dsp::settings::GRAPHIC_10;
+        for (i, centre) in GRAPHIC_10.iter().enumerate() {
+            let far = if i < 5 { centre * 16.0 } else { centre / 16.0 };
+            for db in [6.0, -6.0] {
+                let mut gains = [0.0; 10];
+                gains[i] = db;
+                let params =
+                    Params { eq: graphic_curve(gains), auto_preamp_allowance_db: Some(3.0), ..Params::default() };
+                let tone = gain_at(params.clone(), *centre) - gain_at(params, far);
+                assert!((tone - db).abs() < 1.0, "{centre} Hz at {db:+} dB: {tone:+.2} dB against {far} Hz");
+            }
+        }
+    }
+
+    /// A boost across the whole range is a change of level, not of tone:
+    /// auto preamp takes all of it back, rather than letting the allowance
+    /// through to a limiter that would then hold every loud passage down.
+    #[test]
+    fn auto_preamp_takes_back_a_broad_boost_in_full() {
+        let params = Params { eq: graphic_curve([6.0; 10]), auto_preamp_allowance_db: Some(3.0), ..Params::default() };
+        for freq in [100.0, 1000.0, 8000.0] {
+            let level = gain_at(params.clone(), freq);
+            assert!(level.abs() < 0.6, "{freq} Hz comes out at {level:+.2} dB");
+        }
+        let mut p = processor(params);
+        p.process(&mut [], None);
+        assert!((linear_to_db(p.gain_target) + 6.0).abs() < 0.3, "preamp {:+.2} dB", linear_to_db(p.gain_target));
     }
 
     #[test]
@@ -990,6 +1119,7 @@ mod tests {
         let params = Params {
             preamp_db: 9.0,
             eq: graphic([3.0, 0.0, -2.0, 4.0, 0.0, 6.0, 0.0, 2.0, 0.0, -3.0], AbSlot::A),
+            limiter: true,
             ..Params::default()
         };
         let (mut joined, mut straight) = (processor(params.clone()), processor(params));
@@ -1092,6 +1222,7 @@ mod tests {
                 curve: EqCurve { parametric: vec![EqBand::peak(1000.0, db, 1.0)], ..EqCurve::default() },
             }),
             auto_preamp_allowance_db: Some(0.0),
+            limiter: true,
             ..Params::default()
         }
     }
@@ -1119,7 +1250,7 @@ mod tests {
         shared.set_params(preamped(AbSlot::A, 12.0));
         p.process(&mut [], None);
         p.flush();
-        assert!((p.gain_target - db_to_linear(-p.eq.max_boost_db())).abs() < 1e-6, "auto preamp not refreshed");
+        assert!((p.gain_target - db_to_linear(-p.eq.lift().peak_db)).abs() < 1e-6, "auto preamp not refreshed");
         assert!(p.limiter_needed);
     }
 
@@ -1129,11 +1260,12 @@ mod tests {
     #[test]
     fn bypassing_the_eq_lets_a_hot_master_through_untouched() {
         let shared = Arc::new(Shared::new());
-        shared.set_params(Params { eq: curve(vec![EqBand::peak(440.0, 4.0, 1.0)]), ..Params::default() });
+        let limited = Params { eq: curve(vec![EqBand::peak(440.0, 4.0, 1.0)]), limiter: true, ..Params::default() };
+        shared.set_params(limited);
         let mut p = processor_on(&shared, 2);
         p.process(&mut sine(48_000, 0.99), None);
         assert!(p.status.limiting);
-        shared.set_params(Params::default());
+        shared.set_params(Params { limiter: true, ..Params::default() });
         // Buffers as GStreamer hands them over: whether to look for peaks
         // is decided per buffer.
         for block in sine(96_000, 0.99).chunks(2 * 1024) {

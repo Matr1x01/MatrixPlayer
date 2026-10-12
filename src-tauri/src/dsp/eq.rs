@@ -16,7 +16,7 @@
 //! Nothing here allocates while processing: chains are built when settings
 //! change, and the crossfade's scratch buffer when the format does.
 
-use super::biquad::{Coeffs, State, max_boost_db};
+use super::biquad::{Coeffs, State, added_loudness_db, max_boost_db};
 use super::matched::shelf_design;
 use super::settings::{AbSlot, EqBand, EqMode, FilterKind};
 
@@ -215,18 +215,33 @@ impl Chain {
         self.slots.iter().any(|s| s.live || is_live(&s.target))
     }
 
-    /// The largest boost of the bands being moved to.
-    fn target_boost(&self) -> f64 {
-        boost_of(self.slots.iter().map(|s| &s.target), self.rate)
+    /// How much the bands being moved to raise the signal.
+    fn target_lift(&self) -> Lift {
+        lift_of(self.slots.iter().map(|s| &s.target), self.rate)
     }
 }
 
-/// The largest boost (dB) the live bands among `bands` add together.
-fn boost_of<'a>(bands: impl Iterator<Item = &'a EqBand>, rate: f64) -> f64 {
+/// How much a curve raises the signal, for auto preamp: the largest boost
+/// at any frequency (what a tone there gains), and the loudness it adds to
+/// music (what a boost across the range gains).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Lift {
+    pub peak_db: f64,
+    pub loudness_db: f64,
+}
+
+impl Lift {
+    fn max(self, other: Self) -> Self {
+        Self { peak_db: self.peak_db.max(other.peak_db), loudness_db: self.loudness_db.max(other.loudness_db) }
+    }
+}
+
+/// How much the live bands among `bands` raise the signal together.
+fn lift_of<'a>(bands: impl Iterator<Item = &'a EqBand>, rate: f64) -> Lift {
     let live: Vec<&EqBand> = bands.filter(|b| is_live(b)).collect();
     let coeffs: Vec<Coeffs> = live.iter().map(|b| Coeffs::for_band(b, rate)).collect();
     let centres: Vec<f64> = live.iter().map(|b| b.freq).collect();
-    max_boost_db(&coeffs, &centres, rate)
+    Lift { peak_db: max_boost_db(&coeffs, &centres, rate), loudness_db: added_loudness_db(&coeffs, rate) }
 }
 
 fn glide_step(rate: f64) -> f64 {
@@ -254,7 +269,7 @@ pub struct Equalizer {
     scratch: Vec<f64>,
     rate: f64,
     channels: usize,
-    max_boost_db: f64,
+    lift: Lift,
 }
 
 impl Equalizer {
@@ -269,7 +284,7 @@ impl Equalizer {
             scratch: vec![0.0; BLOCK_FRAMES * channels],
             rate,
             channels,
-            max_boost_db: 0.0,
+            lift: Lift::default(),
         }
     }
 
@@ -285,7 +300,7 @@ impl Equalizer {
         self.scratch = vec![0.0; BLOCK_FRAMES * channels];
         self.finish_crossfade();
         self.chain.set_format(rate, channels);
-        self.max_boost_db = self.chain.target_boost();
+        self.lift = self.chain.target_lift();
     }
 
     /// Moves to `bands` (one per slot) of `curve`: gliding when only band
@@ -307,11 +322,11 @@ impl Equalizer {
             self.curve = curve;
             self.fade_left = self.fade_len;
         }
-        self.max_boost_db = self.chain.target_boost();
+        self.lift = self.chain.target_lift();
         if let Some((_, bands)) = &self.pending {
             // Heard as soon as the crossfade ends, perhaps mid-buffer: auto
             // preamp and the limiter must already allow for it.
-            self.max_boost_db = self.max_boost_db.max(boost_of(bands.iter(), self.rate));
+            self.lift = self.lift.max(lift_of(bands.iter(), self.rate));
         }
     }
 
@@ -371,7 +386,7 @@ impl Equalizer {
         if let Some((curve, bands)) = self.pending.take() {
             self.chain = Chain::new(&bands, self.rate, self.channels);
             self.curve = curve;
-            self.max_boost_db = self.chain.target_boost();
+            self.lift = self.chain.target_lift();
         }
     }
 
@@ -388,9 +403,10 @@ impl Equalizer {
             || self.pending.as_ref().is_some_and(|(_, bands)| bands.iter().any(is_live))
     }
 
-    /// The largest boost of the curve being moved to, at the stream's rate.
-    pub fn max_boost_db(&self) -> f64 {
-        self.max_boost_db
+    /// How much the curve being moved to raises the signal, at the stream's
+    /// rate.
+    pub fn lift(&self) -> Lift {
+        self.lift
     }
 
     pub fn flush_denormals(&mut self) {

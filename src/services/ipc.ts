@@ -43,8 +43,10 @@ export const playerApi = {
   setRepeat: (mode: RepeatMode) => invoke<void>('player_set_repeat', { mode }),
   setShuffle: (enabled: boolean) => invoke<void>('player_set_shuffle', { enabled }),
   setGapless: (enabled: boolean) => invoke<void>('player_set_gapless', { enabled }),
-  /** Lyrics of the current track (sidecar .lrc or tags), or null. */
+  /** Lyrics of the current track (sidecar .lrc, tags, or LRCLIB), or null. Fails only when LRCLIB could not be asked. */
   lyrics: () => invoke<Lyrics | null>('player_lyrics'),
+  /** Forgets downloaded lyrics; returns how many tracks' were forgotten. */
+  forgetDownloadedLyrics: () => invoke<number>('lyrics_forget_downloaded'),
   /** Peak levels (0–255) of the current track in `points` columns. */
   waveform: (points: number) => invoke<number[] | null>('player_waveform', { points }),
 };

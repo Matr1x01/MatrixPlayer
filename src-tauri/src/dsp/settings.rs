@@ -146,7 +146,7 @@ pub enum AbSlot {
 }
 
 /// Bumped when a default changes in a way saved settings must follow.
-pub const SETTINGS_VERSION: u32 = 2;
+pub const SETTINGS_VERSION: u32 = 3;
 
 fn legacy_version() -> u32 {
     1
@@ -168,11 +168,16 @@ pub struct DspSettings {
     pub preset: Option<String>,
     pub preamp_db: f64,
     /// Lower the level by the EQ's largest boost beyond
-    /// `auto_preamp_allowance_db`, the same for every track.
+    /// `auto_preamp_allowance_db`, and at least by the loudness the EQ adds
+    /// to music; the same for every track. Off by default: a boost is heard
+    /// as set.
     pub auto_preamp: bool,
-    /// Boost the EQ may add before auto preamp lowers the level; the limiter
-    /// catches the peaks it pushes over full scale.
+    /// Boost the EQ may add before auto preamp lowers the level.
     pub auto_preamp_allowance_db: f64,
+    /// A look-ahead limiter at the end of the chain (before the volume)
+    /// keeps the true peak under −0.5 dBTP. Off by default: nothing is
+    /// limited, and a boost that takes a full-scale master over clips.
+    pub limiter: bool,
     /// −1 (left) … 1 (right).
     pub balance: f64,
     /// 0 (mono) … 2 (twice as wide); 1 leaves the image alone.
@@ -186,6 +191,7 @@ pub struct DspSettings {
     /// Gain for files without ReplayGain tags while ReplayGain is on. 0 dB
     /// plays them as mastered, as other players do.
     pub replay_gain_fallback_db: f64,
+    /// ReplayGain never raises a track past its tagged peak.
     pub clipping_prevention: bool,
     pub soft_fades: bool,
     pub dither: bool,
@@ -202,8 +208,9 @@ impl Default for DspSettings {
             b: EqCurve::default(),
             preset: Some("Flat".into()),
             preamp_db: 0.0,
-            auto_preamp: true,
+            auto_preamp: false,
             auto_preamp_allowance_db: 3.0,
+            limiter: false,
             balance: 0.0,
             width: 1.0,
             crossfeed: false,
@@ -228,6 +235,12 @@ impl DspSettings {
             if self.replay_gain_fallback_db == -8.0 {
                 self.replay_gain_fallback_db = 0.0;
             }
+        }
+        if self.version < 3 {
+            // Version 2 lowered the level by every EQ boost beyond 3 dB, so
+            // a boost was mostly heard as everything else getting quieter.
+            // The limiter that caught the rest is a setting of its own now.
+            self.auto_preamp = false;
         }
         self.version = SETTINGS_VERSION;
         self
@@ -327,6 +340,13 @@ mod tests {
         assert_eq!(chosen.migrate().replay_gain_fallback_db, -6.0, "a user's own value stays");
         let current: DspSettings = serde_json::from_str(r#"{"version":2,"replayGainFallbackDb":-8}"#).unwrap();
         assert_eq!(current.migrate().replay_gain_fallback_db, -8.0, "chosen after the change: kept");
+
+        let v2: DspSettings = serde_json::from_str(r#"{"version":2,"autoPreamp":true}"#).unwrap();
+        let migrated = v2.migrate();
+        assert!(!migrated.auto_preamp && !migrated.limiter, "boosts are heard as set, nothing is limited");
+        let v3: DspSettings = serde_json::from_str(r#"{"version":3,"autoPreamp":true,"limiter":true}"#).unwrap();
+        let kept = v3.migrate();
+        assert!(kept.auto_preamp && kept.limiter, "chosen after the change: kept");
     }
 
     #[test]

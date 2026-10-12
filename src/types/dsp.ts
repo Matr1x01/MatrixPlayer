@@ -45,9 +45,12 @@ export interface DspSettings {
   /** Preset the active slot was loaded from. */
   preset: string | null;
   preampDb: number;
+  /** Lower the level to make room for EQ boosts (off: a boost is heard as set). */
   autoPreamp: boolean;
-  /** EQ boost allowed before auto preamp lowers the level; the limiter catches the rest. */
+  /** EQ boost allowed before auto preamp lowers the level (it always takes back the loudness the EQ adds). */
   autoPreampAllowanceDb: number;
+  /** Limit the true peak to −0.5 dBTP at the end of the chain (off: nothing is limited, overs clip). */
+  limiter: boolean;
   /** −1 (left) … 1 (right). */
   balance: number;
   /** 0 (mono) … 2; 1 leaves the stereo image alone. */
@@ -70,6 +73,8 @@ export interface EqResponse {
   bands: number[][];
   /** Largest boost anywhere in the audible range. */
   maxBoostDb: number;
+  /** Loudness the curve adds to music; auto preamp takes back at least this. */
+  loudnessDb: number;
 }
 
 export interface Preset {
@@ -86,6 +91,8 @@ export interface DspStatus {
   replayGainDb: number;
   /** The limiter caught overs recently. */
   limiting: boolean;
+  /** Samples went over full scale recently: the output clips them. */
+  clipping: boolean;
   sampleRate: number;
   channels: number;
 }
@@ -136,8 +143,12 @@ export interface LyricLine {
 }
 
 export interface Lyrics {
-  source: 'file' | 'embedded';
+  source: 'file' | 'embedded' | 'online';
   fileName: string | null;
+  /** Where online lyrics came from (LRCLIB), to credit it. */
+  provider: string | null;
+  /** The track has no words; `lines` is empty. */
+  instrumental: boolean;
   synced: boolean;
   offsetMs: number;
   lines: LyricLine[];

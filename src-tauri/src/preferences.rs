@@ -70,6 +70,9 @@ pub struct UiPreferences {
     pub track_notifications: bool,
     /// At startup, bring back the last queue, paused where it was.
     pub restore_session: bool,
+    /// Look lyrics up on LRCLIB for tracks without their own (only their
+    /// title, artist, album and length are sent).
+    pub online_lyrics: bool,
     /// How long log files are kept, in days.
     pub log_retention_days: u32,
 }
@@ -91,6 +94,7 @@ impl Default for UiPreferences {
             interface_scale: 1.0,
             track_notifications: true,
             restore_session: true,
+            online_lyrics: true,
             log_retention_days: crate::logging::DEFAULT_RETENTION_DAYS,
         }
     }
@@ -110,6 +114,7 @@ pub struct UiPreferencesPatch {
     pub interface_scale: Option<f64>,
     pub track_notifications: Option<bool>,
     pub restore_session: Option<bool>,
+    pub online_lyrics: Option<bool>,
     pub log_retention_days: Option<u32>,
 }
 
@@ -169,6 +174,10 @@ pub async fn update(db: &Database, patch: UiPreferencesPatch) -> AppResult<UiPre
     if let Some(on) = patch.restore_session {
         prefs.restore_session = on;
         settings::set(db, "ui.restoreSession", &on).await?;
+    }
+    if let Some(on) = patch.online_lyrics {
+        prefs.online_lyrics = on;
+        settings::set(db, "ui.onlineLyrics", &on).await?;
     }
     if let Some(scale) = patch.interface_scale {
         if !SCALE_RANGE.contains(&scale) {

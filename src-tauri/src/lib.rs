@@ -113,6 +113,7 @@ pub fn run() {
             commands::player::player_set_repeat,
             commands::player::player_set_shuffle,
             commands::player::player_lyrics,
+            commands::player::lyrics_forget_downloaded,
             commands::player::player_waveform,
             commands::queue::queue_play_entry,
             commands::queue::queue_remove_entry,
@@ -224,7 +225,14 @@ fn setup(app: &AppHandle) -> Result<(), error::AppError> {
     let waveforms = Arc::new(WaveformCache::new(cache_dir.join("waveforms"))?);
     desktop::mpris::spawn(app.clone(), player.clone(), artwork.clone());
     desktop::notifications::spawn(app.clone(), player.clone(), artwork.clone(), db.clone());
-    app.manage(AppState { player, library, artwork, dsp, waveforms, db, output_mode });
+    let lrclib = match metadata::lrclib::Lrclib::new(metadata::lrclib::BASE_URL) {
+        Ok(client) => Some(Arc::new(client)),
+        Err(e) => {
+            log::error!("lyrics cannot be looked up online: {e}");
+            None
+        }
+    };
+    app.manage(AppState { player, library, artwork, dsp, waveforms, db, output_mode, lrclib });
 
     // Files on the command line play; transport flags only matter to an
     // instance that is already running. Otherwise the last session comes

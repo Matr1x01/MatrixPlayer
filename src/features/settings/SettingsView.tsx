@@ -10,7 +10,7 @@ import { patchDsp, useDsp } from '@/stores/dsp';
 import { useNavigation } from '@/stores/navigation';
 import { usePlayer } from '@/stores/player';
 import { updatePreferences, usePreferences } from '@/stores/preferences';
-import { run } from '@/stores/toasts';
+import { run, showToast } from '@/stores/toasts';
 import { setViewPrefs, useViewPrefs, type VisualizerMode } from '@/stores/viewPrefs';
 import type { AppInfo } from '@/types/preferences';
 
@@ -57,7 +57,7 @@ const KEYWORDS: Record<Section, string> = {
   dsp: 'equalizer eq signal chain limiter crossfeed dither preamp replaygain bit-perfect bitperfect exclusive',
   appearance: 'theme dark light accent colour color background density rows interface scale zoom motion animation sidebar',
   nowPlaying: 'visualizer spectrum waveform frequency meters artwork background',
-  lyrics: 'lyrics lrc synced embedded sources offset',
+  lyrics: 'lyrics lrc synced embedded sources offset online lrclib internet download',
   shortcuts: `keyboard keys hotkeys ${SHORTCUTS.map((s) => s.action).join(' ')}`,
   desktop: 'mpris media keys lock screen notifications opening files command line launcher actions',
   about: 'version gstreamer storage database logs log files troubleshooting diagnostics errors crash debug',
@@ -188,12 +188,33 @@ function NowPlayingSettings() {
 }
 
 function LyricsSettings() {
+  const prefs = usePreferences((s) => s.prefs);
   return (
     <>
       <SettingRow title="Sources" hint="Where lyrics are found, first match wins">
         <span className="t2">
           A <span className="mono">.lrc</span> file named like the track, then lyrics embedded in its tags
+          {prefs.onlineLyrics && ', then LRCLIB'}
         </span>
+      </SettingRow>
+      <SettingRow
+        title="Find lyrics online"
+        hint="Asks LRCLIB (lrclib.net) with the track's title, artist, album and length; synced lyrics are preferred"
+      >
+        <Toggle on={prefs.onlineLyrics} onChange={(onlineLyrics) => void updatePreferences({ onlineLyrics })} label="Find lyrics online" />
+      </SettingRow>
+      <SettingRow title="Downloaded lyrics" hint="Kept on this computer, so each track is looked up once">
+        <button
+          type="button"
+          className="btn"
+          onClick={() =>
+            void run(playerApi.forgetDownloadedLyrics()).then((n) => {
+              if (n != null) showToast({ tone: 'info', message: n === 1 ? 'Forgot the lyrics of 1 track' : `Forgot the lyrics of ${n} tracks` });
+            })
+          }
+        >
+          Forget downloaded lyrics
+        </button>
       </SettingRow>
       <SettingRow title="Synced lyrics" hint="LRC timestamps, including [offset:]">
         <span className="t2">Follow playback; click a line to jump to it</span>

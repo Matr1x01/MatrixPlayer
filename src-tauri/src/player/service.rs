@@ -729,9 +729,13 @@ impl Player {
     }
 
     /// The position in the current track: the engine's, unless a track is
-    /// opening or a seek is under way (it may still be fading out, with the
-    /// engine at the old position), when it is the one asked for.
+    /// opening (perhaps to seek to a position once open) or a seek is under
+    /// way (it may still be fading out, with the engine at the old
+    /// position), when it is the one asked for.
     fn heard_position(&self) -> Duration {
+        if let Some((position, _)) = self.pending_seek {
+            return position;
+        }
         if self.loading || self.seeking { self.position } else { self.engine.position().unwrap_or(self.position) }
     }
 
@@ -943,6 +947,7 @@ impl Player {
             detail: None,
             uri: None,
         })?;
+        log::info!("opening {} ({}){}", track.file_name, describe(&track), if play { "" } else { ", paused" });
         // Checked here rather than left to GStreamer: a missing file fails
         // the pipeline's state change, and costs a reset to recover from.
         let loaded = if track.path.exists() {
@@ -961,12 +966,26 @@ impl Player {
         Ok(())
     }
 
-    /// The stream to continue with gaplessly after the current one.
+    /// The stream to continue with gaplessly after the current one. Only one
+    /// the output can take as it is: the output keeps the format it was
+    /// opened with (see `audio`), so a track at another rate, or one whose
+    /// format is not known, is opened on its own once the current one ends.
     fn next_uri(&self) -> Option<String> {
         if !self.gapless {
             return None;
         }
-        self.queue.peek_auto_next().and_then(|e| filesystem::path_to_uri(&e.track.path).ok())
+        let (current, next) = (self.queue.current()?, self.queue.peek_auto_next()?);
+        let bit_perfect = self.dsp.bypassed();
+        let (from, to) = (output_shape(&current.track, bit_perfect), output_shape(&next.track, bit_perfect));
+        if from.is_none() || from != to {
+            log::debug!(
+                "not joining {} to {} gaplessly: {from:?} → {to:?}",
+                current.track.file_name,
+                next.track.file_name
+            );
+            return None;
+        }
+        filesystem::path_to_uri(&next.track.path).ok()
     }
 
     /// Tells the engine what to continue with after the queue changed.
@@ -1061,6 +1080,22 @@ impl Player {
                 self.output = Some(format);
                 self.emit_signal();
             }
+            EngineEvent::FormatChanged { from, to, new_stream } => self.reopen_for_format(&from, &to, new_stream),
+        }
+    }
+
+    /// The engine held back a stream the output could not take without
+    /// reopening (see `audio`): opens it anew, on its own, where it was.
+    /// Nothing of it has been heard, so there is nothing to fade out.
+    fn reopen_for_format(&mut self, from: &StreamFormat, to: &StreamFormat, new_stream: bool) {
+        let name = self.queue.current().map(|e| e.track.file_name.clone()).unwrap_or_default();
+        log::warn!("reopening {name}: the output was open in {from}, the stream is in {to}");
+        let play = self.wants_play();
+        let position = if new_stream { Duration::ZERO } else { self.heard_position() };
+        let seek = (position > Duration::from_secs(1)).then_some((position, play));
+        self.failures = 0;
+        if let Err(e) = self.load_current_at(play && seek.is_none(), seek) {
+            log::error!("could not reopen {name}: {e}");
         }
     }
 
@@ -1123,6 +1158,9 @@ impl Player {
                 self.queue.jump_to(id);
             }
         }
+        if let Some(track) = self.queue.current().map(|e| &e.track) {
+            log::info!("continuing gaplessly with {} ({})", track.file_name, describe(track));
+        }
         self.position = Duration::ZERO;
         self.duration = self.queue.current().and_then(|e| known_duration(&e.track));
         self.error = None;
@@ -1134,17 +1172,19 @@ impl Player {
         self.refresh_status();
     }
 
-    /// End of stream is only reached when no gapless continuation was queued.
+    /// End of stream is only reached when no gapless continuation was queued:
+    /// gapless is off, the next track is in another format, or the queue
+    /// changed after the continuation point.
     fn on_end_of_stream(&mut self) {
         if self.queue.peek_auto_next().is_some() {
-            // Repeat or the queue changed after the continuation point. A
-            // soft pause still fading out when the track ended stays paused.
+            // A soft pause still fading out when the track ended stays paused.
             self.queue.advance_auto();
             if let Err(e) = self.load_current(self.intent == Intent::Play) {
                 log::error!("could not continue after end of stream: {e}");
             }
             return;
         }
+        log::info!("end of the queue");
         if let Err(e) = self.stop_now() {
             log::error!("could not stop at end of queue: {e}");
         }
@@ -1230,6 +1270,13 @@ impl Player {
             detail: err.detail,
             file_name: err.uri.as_deref().and_then(file_name_from_uri),
         };
+        log::warn!(
+            "could not play {}: {} ({:?}; {})",
+            error.file_name.as_deref().unwrap_or("a track"),
+            error.message,
+            error.kind,
+            error.detail.as_deref().unwrap_or("no details"),
+        );
         run.failed += 1;
         if run.failed <= REPORTED_PER_RUN {
             self.emit(PlayerEvent::Error(error.clone()));
@@ -1418,6 +1465,29 @@ impl Player {
     fn emit_signal(&self) {
         self.emit(PlayerEvent::Signal(self.signal_path()));
     }
+}
+
+/// The sample rate and channel count `track` reaches the output with, as
+/// far as its properties tell: mono is upmixed to stereo unless nothing may
+/// change the samples, and Opus always decodes at 48 kHz (its header holds
+/// the rate it was encoded from).
+fn output_shape(track: &TrackInfo, bit_perfect: bool) -> Option<(u32, u8)> {
+    let p = &track.properties;
+    let rate = if p.codec == "Opus" { 48_000 } else { p.sample_rate? };
+    let channels = if bit_perfect { p.channels? } else { p.channels?.max(2) };
+    Some((rate, channels))
+}
+
+/// "FLAC, 96000 Hz, 2 ch", for the log.
+fn describe(track: &TrackInfo) -> String {
+    let p = &track.properties;
+    let known = |v: Option<String>| v.unwrap_or_else(|| "?".into());
+    format!(
+        "{}, {} Hz, {} ch",
+        p.codec,
+        known(p.sample_rate.map(|r| r.to_string())),
+        known(p.channels.map(|c| c.to_string()))
+    )
 }
 
 fn known_duration(track: &TrackInfo) -> Option<Duration> {
@@ -2077,6 +2147,204 @@ mod tests {
         assert!((snapshot.volume.level - 0.8).abs() < 1e-9, "the slider keeps its place for afterwards");
         assert!(snapshot.signal.bit_perfect && !snapshot.signal.exclusive);
         assert_eq!(snapshot.signal.verdict, BitPerfect::Yes { shared: true });
+    }
+
+    /// Each buffer a recording output rendered: its rate, frames and peak.
+    type Formats = Arc<std::sync::Mutex<Vec<(u32, usize, f64)>>>;
+
+    /// A fake output, in real time, that takes any format and records what
+    /// it renders.
+    fn format_recording_output() -> (Output, Formats) {
+        use gstreamer::prelude::*;
+        gstreamer::init().unwrap();
+        let log: Formats = Arc::default();
+        let sink = gstreamer::ElementFactory::make("fakesink")
+            .name("matrixplayer-output")
+            .property("sync", true)
+            .property("signal-handoffs", true)
+            .build()
+            .unwrap();
+        let rendered = log.clone();
+        sink.connect("handoff", false, move |args| {
+            let buffer = args[1].get::<gstreamer::Buffer>().ok()?;
+            let pad = args[2].get::<gstreamer::Pad>().ok()?;
+            let caps = pad.current_caps()?;
+            let info = gstreamer_audio::AudioInfo::from_caps(&caps).ok()?;
+            let map = buffer.map_readable().ok()?;
+            let peak = map
+                .as_slice()
+                .chunks_exact(8)
+                .map(|b| f64::from_ne_bytes(b.try_into().unwrap()).abs())
+                .fold(0.0, f64::max);
+            rendered.lock().unwrap().push((info.rate(), map.size() / info.bpf() as usize, peak));
+            None
+        });
+        (Output { sink, backend: crate::audio::OutputBackend::Auto, device: None, exclusive: false }, log)
+    }
+
+    /// The rates the output played sound at, in order, and for how long (s).
+    fn heard(rendered: &Formats) -> Vec<(u32, f64)> {
+        let mut heard: Vec<(u32, f64)> = Vec::new();
+        for &(rate, frames, _) in rendered.lock().unwrap().iter().filter(|(_, _, peak)| *peak > 0.05) {
+            let seconds = frames as f64 / f64::from(rate);
+            match heard.last_mut() {
+                Some((r, s)) if *r == rate => *s += seconds,
+                _ => heard.push((rate, seconds)),
+            }
+        }
+        heard
+    }
+
+    /// A player at full volume on `output`, and its events.
+    async fn player_on(output: Output) -> (PlayerHandle, broadcast::Receiver<PlayerEvent>) {
+        gstreamer::init().unwrap();
+        let settings = PlayerSettings {
+            volume: 1.0,
+            muted: false,
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            gapless: true,
+            output_device: None,
+        };
+        let (player, service) = PlayerHandle::new(Database::in_memory().await.unwrap(), settings, output).unwrap();
+        tokio::spawn(service);
+        let events = player.subscribe();
+        (player, events)
+    }
+
+    /// Writes 0.5 s of the tone at each rate, named in order.
+    fn tracks_at(dir: &std::path::Path, rates: &[u32], artwork: &ArtworkStore) -> Vec<Arc<TrackInfo>> {
+        rates
+            .iter()
+            .enumerate()
+            .map(|(i, rate)| {
+                let path = dir.join(format!("{}.flac", char::from(b'a' + i as u8)));
+                crate::test_support::write_flac_format(&path, 0.5, *rate, 2);
+                Arc::new(TrackInfo::load(&path, artwork))
+            })
+            .collect()
+    }
+
+    /// The silent-track bug: a gapless join to another sample rate left the
+    /// output on the old format, and the track after it played in silence
+    /// (or at the wrong pitch). Each change of rate is now opened on its
+    /// own; tracks at the same rate still join without a gap.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_queue_of_mixed_sample_rates_plays_every_track_in_full() {
+        let (output, rendered) = format_recording_output();
+        let (player, mut events) = player_on(output).await;
+        let dir = tempfile::tempdir().unwrap();
+        let artwork = ArtworkStore::new(dir.path().join("art")).unwrap();
+        let tracks = tracks_at(dir.path(), &[44_100, 44_100, 48_000, 96_000, 44_100], &artwork);
+        player.command(PlayerCommand::Insert { tracks, mode: InsertMode::Replace, start: 0 }).await.unwrap();
+        let events = wait_for(&mut events, is_status(PlaybackStatus::Stopped)).await;
+
+        assert_eq!(track_titles(&events), ["a", "b", "c", "d", "e"]);
+        assert!(errors(&events).is_empty(), "{:#?}", errors(&events));
+        let opened = statuses(&events).iter().filter(|s| **s == PlaybackStatus::Loading).count();
+        assert_eq!(opened, 4, "a and b join; c, d and e are opened on their own");
+        let heard = heard(&rendered);
+        let rates: Vec<u32> = heard.iter().map(|(r, _)| *r).collect();
+        assert_eq!(rates, [44_100, 48_000, 96_000, 44_100], "{heard:?}");
+        // Each fixture is 0.51 s long (whole 1024-frame blocks).
+        for ((rate, seconds), tracks) in heard.iter().zip([2.0, 1.0, 1.0, 1.0]) {
+            assert!((seconds - 0.51 * tracks).abs() < 0.03, "{rate} Hz heard for {seconds:.3} s");
+        }
+    }
+
+    /// A track whose properties misstate its rate is joined gaplessly; the
+    /// engine holds it back from the output, and it is opened anew and
+    /// heard from its start.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_join_the_output_cannot_take_is_reopened_from_the_start() {
+        let (output, rendered) = format_recording_output();
+        let (player, mut events) = player_on(output).await;
+        let dir = tempfile::tempdir().unwrap();
+        let artwork = ArtworkStore::new(dir.path().join("art")).unwrap();
+        let mut tracks = tracks_at(dir.path(), &[44_100, 48_000], &artwork);
+        Arc::make_mut(&mut tracks[1]).properties.sample_rate = Some(44_100);
+        player.command(PlayerCommand::Insert { tracks, mode: InsertMode::Replace, start: 0 }).await.unwrap();
+        let events = wait_for(&mut events, is_status(PlaybackStatus::Stopped)).await;
+
+        let mut titles = track_titles(&events);
+        titles.dedup();
+        assert_eq!(titles, ["a", "b"], "b is announced again as it is reopened");
+        assert!(errors(&events).is_empty(), "{:#?}", errors(&events));
+        let heard = heard(&rendered);
+        assert_eq!(heard.iter().map(|(r, _)| *r).collect::<Vec<_>>(), [44_100, 48_000], "{heard:?}");
+        assert!((heard[1].1 - 0.51).abs() < 0.03, "the reopened track is heard in full: {heard:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skipping_to_a_track_at_another_rate_is_heard() {
+        let (output, rendered) = format_recording_output();
+        let (player, mut events) = player_on(output).await;
+        let dir = tempfile::tempdir().unwrap();
+        let artwork = ArtworkStore::new(dir.path().join("art")).unwrap();
+        let (a, b) = (dir.path().join("a.flac"), dir.path().join("b.flac"));
+        crate::test_support::write_flac_format(&a, 4.0, 44_100, 2);
+        crate::test_support::write_flac_format(&b, 4.0, 96_000, 2);
+        let tracks = [a, b].iter().map(|p| Arc::new(TrackInfo::load(p, &artwork))).collect();
+        player.command(PlayerCommand::Insert { tracks, mode: InsertMode::Replace, start: 0 }).await.unwrap();
+        wait_for(&mut events, is_status(PlaybackStatus::Playing)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        player.command(PlayerCommand::Next).await.unwrap();
+        wait_for(&mut events, is_status(PlaybackStatus::Playing)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let snapshot = player.snapshot().await.unwrap();
+        assert_eq!(snapshot.signal.output.map(|f| f.sample_rate), Some(96_000));
+        let heard = heard(&rendered);
+        assert!(matches!(heard.last(), Some((96_000, s)) if *s > 0.3), "{heard:?}");
+    }
+
+    /// Switching bit-perfect playback on renegotiates a mono stream in
+    /// place (it is no longer upmixed). The engine holds the new layout
+    /// back and the player reopens the track: where it was, not from the
+    /// start, whichever of that and the reopen asked for comes first.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bit_perfect_on_a_mono_track_reopens_it_where_it_was() {
+        let mut h = harness().await;
+        let a = h.dir.path().join("mono.flac");
+        crate::test_support::write_flac_format(&a, 6.0, 44_100, 1);
+        h.open(vec![a]).await;
+        wait_for(&mut h.events, |e| matches!(e, PlayerEvent::Position { position_ms, .. } if *position_ms >= 2000))
+            .await;
+
+        h.player.dsp().set_bypass(true);
+        h.player.command(PlayerCommand::Reopen).await.unwrap();
+        wait_for(
+            &mut h.events,
+            |e| matches!(e, PlayerEvent::Signal(s) if s.output.as_ref().is_some_and(|f| f.channels == 1)),
+        )
+        .await;
+        wait_for(&mut h.events, is_status(PlaybackStatus::Playing)).await;
+        let position = h.player.snapshot().await.unwrap().position_ms;
+        assert!(position >= 1900, "reopened at {position} ms");
+    }
+
+    #[test]
+    fn tracks_join_gaplessly_only_in_the_same_output_format() {
+        gstreamer::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let artwork = ArtworkStore::new(dir.path().join("art")).unwrap();
+        let load = |name: &str, rate, channels| {
+            let path = dir.path().join(name);
+            crate::test_support::write_flac_format(&path, 0.1, rate, channels);
+            TrackInfo::load(&path, &artwork)
+        };
+        let (stereo, mono) = (load("stereo.flac", 44_100, 2), load("mono.flac", 44_100, 1));
+        assert_eq!(output_shape(&stereo, false), Some((44_100, 2)));
+        assert_eq!(output_shape(&mono, false), Some((44_100, 2)), "mono is upmixed: it joins stereo");
+        assert_eq!(output_shape(&mono, true), Some((44_100, 1)), "but not in bit-perfect playback");
+        assert_eq!(output_shape(&load("hi.flac", 96_000, 2), false), Some((96_000, 2)));
+
+        let mut opus = stereo.clone();
+        (opus.properties.codec, opus.properties.sample_rate) = ("Opus".into(), Some(44_100));
+        assert_eq!(output_shape(&opus, false), Some((48_000, 2)), "Opus decodes at 48 kHz");
+        let mut unknown = stereo;
+        unknown.properties.sample_rate = None;
+        assert_eq!(output_shape(&unknown, false), None);
     }
 
     #[tokio::test(flavor = "multi_thread")]

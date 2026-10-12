@@ -18,7 +18,7 @@ const curve: EqCurve = {
 };
 
 const settings: DspSettings = {
-  version: 2,
+  version: 3,
   eqEnabled: false,
   slot: 'b',
   bypass: true,
@@ -26,8 +26,9 @@ const settings: DspSettings = {
   b: curve,
   preset: 'Flat',
   preampDb: 0,
-  autoPreamp: true,
+  autoPreamp: false,
   autoPreampAllowanceDb: 3,
+  limiter: false,
   balance: 0,
   width: 1,
   crossfeed: false,

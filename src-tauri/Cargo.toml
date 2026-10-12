@@ -1,6 +1,6 @@
 [package]
 name = "matrixplayer"
-version = "0.2.1"
+version = "0.3.0"
 description = "MatrixPlayer — an audio-focused music player for Linux"
 edition = "2024"
 rust-version = "1.92"
@@ -37,6 +37,10 @@ notify = { version = "8", default-features = false }
 rustfft = "6"
 
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+# Online lyrics (LRCLIB). Rustls on ring: no system TLS library to link, and
+# nothing beyond a C compiler to build; certificates come from the system.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 tauri-plugin-single-instance = "2"
 
