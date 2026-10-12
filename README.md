@@ -37,9 +37,9 @@ download.
 
 | Package | For | Install |
 | --- | --- | --- |
-| `MatrixPlayer_0.2.1_amd64.AppImage` | Any distribution from 2024 on (glibc 2.39+), including Arch | `chmod +x MatrixPlayer_0.2.1_amd64.AppImage && ./MatrixPlayer_0.2.1_amd64.AppImage` |
-| `MatrixPlayer_0.2.1_amd64.deb` | Ubuntu 24.04+, Debian 13+, Mint 22+, Pop!_OS 24.04+ | `sudo apt install ./MatrixPlayer_0.2.1_amd64.deb` |
-| `MatrixPlayer-0.2.1-1.x86_64.rpm` | Fedora 40+, openSUSE Tumbleweed | `sudo dnf install ./MatrixPlayer-0.2.1-1.x86_64.rpm` |
+| `MatrixPlayer_0.3.0_amd64.AppImage` | Any distribution from 2024 on (glibc 2.39+), including Arch | `chmod +x MatrixPlayer_0.3.0_amd64.AppImage && ./MatrixPlayer_0.3.0_amd64.AppImage` |
+| `MatrixPlayer_0.3.0_amd64.deb` | Ubuntu 24.04+, Debian 13+, Mint 22+, Pop!_OS 24.04+ | `sudo apt install ./MatrixPlayer_0.3.0_amd64.deb` |
+| `MatrixPlayer-0.3.0-1.x86_64.rpm` | Fedora 40+, openSUSE Tumbleweed | `sudo dnf install ./MatrixPlayer-0.3.0-1.x86_64.rpm` |
 
 The AppImage ships its own GStreamer, with the plugins for every supported
 format. The `.deb` and `.rpm` packages use the system's GStreamer and pull in
@@ -73,7 +73,9 @@ stay in `~/.local/share/io.github.matr1x01.MatrixPlayer/`.
   compare and bypass.
 - **Tone and space controls:** preamp, auto preamp with an adjustable boost
   allowance, bass and treble shelves, balance, stereo width, headphone
-  crossfeed and a peak limiter.
+  crossfeed and a true-peak limiter. Auto preamp and the limiter are off by
+  default, so an EQ boost is heard as it is set; the equalizer says when a
+  boost clips.
 - **Signal path view.** It shows every stage from decode to output (source
   format, ReplayGain, EQ, processing and the negotiated output format). Click
   a stage to jump to its settings.
@@ -119,7 +121,10 @@ stay in `~/.local/share/io.github.matr1x01.MatrixPlayer/`.
 - Visualizers: spectrum, waveform, frequency and level meters.
 - A **waveform seek bar** drawn from the track itself.
 - **Synced lyrics** from a sidecar `.lrc` file or from embedded tags, with
-  offsets and word timings.
+  offsets and word timings, or else from [LRCLIB](https://lrclib.net) (synced
+  when it has them, plain otherwise; kept on your computer, and only the
+  track's title, artist, album and length are sent). Online lookup can be
+  turned off in Settings › Lyrics.
 - A side panel with *Up next*, *Lyrics* and *File* tabs.
 
 ### Linux desktop
@@ -312,7 +317,7 @@ Rust (`src-tauri/src`):
 | `dsp/` | The `audio-filter` chain, in 64-bit float: ReplayGain from in-stream tags (exact at gapless joins) with peak-based clipping prevention, preamp and auto preamp, parametric and graphic EQ (RBJ biquads), bass/treble shelves, balance, stereo width, crossfeed, soft fades, a peak limiter, and an analysis tap (FFT spectrum, scope, peak/RMS) aligned with what is audible. `service.rs` persists settings and presets. |
 | `player/` | `Queue` (play order, shuffle, repeat, reordering) and the player service actor. Commands, engine events and timers are handled on one task: soft pause/resume, gapless toggle, output switching at the same position, session save/restore, broken files reported and skipped. |
 | `library/` | Incremental scanner (stat-only walk, size/mtime diff, rename detection, parallel tag reads), file watcher, SQLite queries for albums/artists/genres/folders, FTS5 search with accent folding, favorites, playlists and listening history. |
-| `metadata/` | Tags and stream properties via `lofty`; lyrics from a sidecar `.lrc` or embedded tags (LRC with offsets and word timings). |
+| `metadata/` | Tags and stream properties via `lofty`; lyrics from a sidecar `.lrc` or embedded tags (LRC with offsets and word timings), or from LRCLIB (`lrclib.rs`, cached by `online_lyrics.rs`). |
 | `artwork/` | Content-addressed artwork cache with thumbnails, served through the `art://` scheme (no filesystem access from the frontend). |
 | `desktop/` | MPRIS 2 on the session bus (desktop controls, lock screens, media keys), track notifications, command-line actions. |
 | `database/` | SQLite via SQLx with embedded migrations. |
@@ -333,7 +338,7 @@ line, a second launch, or MPRIS `OpenUri`.
 
 Commands (`src/services/ipc.ts` wraps every one):
 
-- Player: `get_player_snapshot`, `player_{play,pause,toggle,stop,next,previous,seek,set_volume,set_muted,set_repeat,set_shuffle,set_gapless,set_output_device}`, `player_lyrics`, `player_waveform`, `audio_output_devices`
+- Player: `get_player_snapshot`, `player_{play,pause,toggle,stop,next,previous,seek,set_volume,set_muted,set_repeat,set_shuffle,set_gapless,set_output_device}`, `player_lyrics`, `lyrics_forget_downloaded`, `player_waveform`, `audio_output_devices`
 - Queue: `queue_{play_entry,remove_entry,clear,clear_others,move,saved_session,restore_session}`, `open_audio_files`, `open_audio_folder`
 - Library: `library_{stats,scan_status,roots,add_root,add_default_root,default_root,remove_root,rescan}`, `library_{albums,album,artists,artist,genres,genre,folder_children,folder,track_list,tracks,search,play}`, `library_{set_favorite,favorite_ids,history,clear_history,reveal_folder,track_folder}`
 - Playlists: `playlists_list`, `playlist_{get,create,rename,set_pinned,delete,add,remove,move}`
