@@ -40,8 +40,21 @@ struct Shared {
     /// can report why (file not found, not audio…) instead of only that the
     /// state change failed.
     last_error: Mutex<Option<EngineError>>,
+    /// What the output was opened with, for [`guard_output`].
+    output: Mutex<OutputGuard>,
     playing: AtomicBool,
     shutdown: AtomicBool,
+}
+
+/// The format the output was opened with, and whether a stream that would
+/// change it is being held back. Cleared whenever a stream is opened, which
+/// is always from READY or NULL, where the output is closed.
+#[derive(Default)]
+struct OutputGuard {
+    format: Option<gst_audio::AudioInfo>,
+    /// A stream started that has not reached the output yet.
+    starting: bool,
+    held: bool,
 }
 
 impl Shared {
@@ -189,11 +202,13 @@ impl AudioEngine {
         Err(error)
     }
 
-    /// Hands `uri` to playbin as the stream to start.
+    /// Hands `uri` to playbin as the stream to start. The pipeline is READY
+    /// or NULL, so the output opens anew and takes the stream's format.
     fn start(&self, uri: &str) {
         *self.shared.starting.lock().unwrap() = VecDeque::from([(uri.to_owned(), false)]);
         *self.shared.current_uri.lock().unwrap() = Some(uri.to_owned());
         self.shared.last_error.lock().unwrap().take();
+        *self.shared.output.lock().unwrap() = OutputGuard::default();
         self.playbin.set_property("uri", uri);
     }
 
@@ -330,7 +345,8 @@ fn install_bus_handler(playbin: &gst::Element, shared: &Arc<Shared>, events: Unb
     });
 }
 
-/// Makes `sink` the DSP chain's output and reports the formats it receives.
+/// Makes `sink` the DSP chain's output, guarding the format it was opened
+/// with.
 fn attach_sink(
     dsp: &DspChain,
     sink: &gst::Element,
@@ -338,8 +354,62 @@ fn attach_sink(
     events: &UnboundedSender<EngineMessage>,
 ) -> AppResult<()> {
     let pad = sink.static_pad("sink").expect("audio sinks have a sink pad");
-    watch_caps(&pad, shared, events.clone(), EngineEvent::OutputFormat);
+    guard_output(&pad, shared, events.clone());
     dsp.set_sink(sink)
+}
+
+/// Reports each format the output is handed, and keeps it on the one it
+/// was opened with. A gapless join to another rate (or, in bit-perfect
+/// playback, another channel count) would change it mid-stream, which
+/// `pipewiresink` never passes on to PipeWire: the new stream played at the
+/// old rate, or with its 1.0 plugin, every buffer failed and the music went
+/// silent while the position ran on. So such a stream is held back, caps
+/// and all, until the player has opened it anew.
+fn guard_output(pad: &gst::Pad, shared: &Arc<Shared>, events: UnboundedSender<EngineMessage>) {
+    // Disposes of what is held back. Not `Drop`: gstreamer-rs has already
+    // taken the item out of the probe's info, and GStreamer 1.24 then
+    // unrefs the missing event (a critical warning); `Handled` tells it the
+    // probe disposed of it.
+    const HOLD: gst::PadProbeReturn = gst::PadProbeReturn::Handled;
+    let shared = shared.clone();
+    let probes = gst::PadProbeType::EVENT_DOWNSTREAM | gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST;
+    pad.add_probe(probes, move |_, info| {
+        let mut output = shared.output.lock().unwrap();
+        if output.held {
+            return HOLD;
+        }
+        let caps = match info.event().map(|e| e.view()) {
+            Some(gst::EventView::Caps(caps)) => caps.caps_owned(),
+            Some(gst::EventView::StreamStart(_)) => {
+                output.starting = true;
+                return gst::PadProbeReturn::Ok;
+            }
+            Some(_) => return gst::PadProbeReturn::Ok,
+            None => {
+                output.starting = false;
+                return gst::PadProbeReturn::Ok;
+            }
+        };
+        let Ok(audio) = gst_audio::AudioInfo::from_caps(&caps) else { return gst::PadProbeReturn::Ok };
+        let to = StreamFormat::from_info(&audio);
+        match &output.format {
+            Some(opened) if *opened != audio => {
+                let from = StreamFormat::from_info(opened);
+                let new_stream = output.starting;
+                output.held = true;
+                drop(output);
+                log::warn!("holding back a stream in {to}: the output is open in {from} (new stream: {new_stream})");
+                shared.send(&events, EngineEvent::FormatChanged { from, to, new_stream });
+                HOLD
+            }
+            _ => {
+                output.format = Some(audio);
+                drop(output);
+                shared.send(&events, EngineEvent::OutputFormat(to));
+                gst::PadProbeReturn::Ok
+            }
+        }
+    });
 }
 
 /// Turns the DSP chain's analysis ring into visualizer frames while
@@ -495,14 +565,7 @@ fn watch_caps(
         if let Some(gst::EventView::Caps(caps)) = info.event().map(|e| e.view())
             && let Ok(audio) = gst_audio::AudioInfo::from_caps(caps.caps())
         {
-            let format = StreamFormat {
-                sample_format: audio.format().to_str().to_string(),
-                bits: audio.depth(),
-                float: audio.format_info().is_float(),
-                sample_rate: audio.rate(),
-                channels: audio.channels(),
-            };
-            shared.send(&events, wrap(format));
+            shared.send(&events, wrap(StreamFormat::from_info(&audio)));
         }
         gst::PadProbeReturn::Ok
     });
@@ -567,6 +630,84 @@ mod tests {
         )));
         assert!(events.iter().any(|e| matches!(e, EngineEvent::OutputFormat(_))));
         assert!(events.iter().any(|e| matches!(e, EngineEvent::Position { .. })), "position is reported while playing");
+        assert!(!events.iter().any(|e| matches!(e, EngineEvent::FormatChanged { .. })), "the same format joins");
+    }
+
+    /// An output that takes any format, and the rate of each buffer it got.
+    fn rate_logging_output() -> (output::Output, Arc<Mutex<Vec<u32>>>) {
+        let bin = gst::parse::bin_from_description("fakesink name=out sync=false", true).unwrap();
+        let rates = Arc::new(Mutex::new(Vec::new()));
+        let log = rates.clone();
+        let pad = bin.by_name("out").unwrap().static_pad("sink").unwrap();
+        pad.add_probe(gst::PadProbeType::BUFFER, move |pad, _| {
+            if let Some(info) = pad.current_caps().and_then(|c| gst_audio::AudioInfo::from_caps(&c).ok()) {
+                log.lock().unwrap().push(info.rate());
+            }
+            gst::PadProbeReturn::Ok
+        });
+        let out =
+            output::Output { sink: bin.upcast(), backend: output::OutputBackend::Auto, device: None, exclusive: false };
+        (out, rates)
+    }
+
+    /// A gapless join to another rate would hand the output a new format
+    /// mid-stream (which `pipewiresink` never passes on): the stream is held
+    /// back whole, and reported, until it is opened anew.
+    #[test]
+    fn a_stream_in_another_format_is_held_back_from_the_output() {
+        use crate::test_support::write_flac_format;
+
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.flac"), dir.path().join("b.flac"));
+        write_flac_format(&a, 0.5, 44_100, 2);
+        write_flac_format(&b, 0.5, 48_000, 2);
+        let (out, rates) = rate_logging_output();
+        let (tx, mut rx) = unbounded_channel();
+        let engine = AudioEngine::new(tx, out).unwrap();
+        engine.load(&path_to_uri(&a).unwrap(), Some(path_to_uri(&b).unwrap()), true).unwrap();
+
+        let events = collect_until(&mut rx, |e| matches!(e, EngineEvent::FormatChanged { .. }));
+        let Some(EngineEvent::FormatChanged { from, to, new_stream }) = events.last() else { unreachable!() };
+        assert_eq!((from.sample_rate, to.sample_rate, *new_stream), (44_100, 48_000, true));
+        // The held stream decodes on to its end: none of it, not even its
+        // end of stream, reaches the output.
+        std::thread::sleep(Duration::from_millis(500));
+        while let Ok(m) = rx.try_recv() {
+            assert!(!matches!(m.event, EngineEvent::EndOfStream | EngineEvent::OutputFormat(_)), "{:?}", m.event);
+        }
+        {
+            let rates = rates.lock().unwrap();
+            assert!(!rates.is_empty() && rates.iter().all(|r| *r == 44_100), "the output only heard 44.1 kHz");
+        }
+
+        // Opened anew, the output takes its format.
+        engine.load(&path_to_uri(&b).unwrap(), None, true).unwrap();
+        let events = collect_until(&mut rx, |e| matches!(e, EngineEvent::EndOfStream));
+        assert!(events.iter().any(|e| matches!(e, EngineEvent::OutputFormat(f) if f.sample_rate == 48_000)));
+        assert_eq!(rates.lock().unwrap().last(), Some(&48_000));
+    }
+
+    /// Bit-perfect playback stops upmixing mono, which renegotiates the
+    /// stream where it is: held back too, as not a new stream.
+    #[test]
+    fn a_format_change_mid_stream_is_held_back_as_well() {
+        use crate::test_support::write_flac_format;
+
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("mono.flac");
+        write_flac_format(&a, 3.0, 44_100, 1);
+        let (tx, mut rx) = unbounded_channel();
+        let engine = AudioEngine::new(tx, output::Output::fake(true)).unwrap();
+        engine.load(&path_to_uri(&a).unwrap(), None, true).unwrap();
+        collect_until(&mut rx, |e| matches!(e, EngineEvent::OutputFormat(f) if f.channels == 2));
+        std::thread::sleep(Duration::from_millis(300));
+
+        engine.dsp().set_bypass(true);
+        let events = collect_until(&mut rx, |e| matches!(e, EngineEvent::FormatChanged { .. }));
+        let Some(EngineEvent::FormatChanged { from, to, new_stream }) = events.last() else { unreachable!() };
+        assert_eq!((from.channels, to.channels, *new_stream), (2, 1, false));
     }
 
     #[test]

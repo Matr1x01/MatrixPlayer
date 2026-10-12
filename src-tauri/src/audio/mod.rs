@@ -9,6 +9,12 @@
 //! The engine knows nothing about queues or tracks. It plays URIs, reports
 //! what the pipeline does as [`EngineEvent`]s, and switches to a preloaded
 //! next URI without a gap when the current stream is about to end.
+//!
+//! The output keeps the format it was opened with until the pipeline is
+//! reset: `pipewiresink` never passes a new format on to PipeWire (it plays
+//! the new stream at the old rate, or in silence with the 1.0 plugin), so a
+//! stream that would change it is held back and reported instead, as
+//! [`EngineEvent::FormatChanged`], for the player to open on its own.
 
 pub mod diagnostics;
 mod engine;
@@ -118,6 +124,33 @@ pub enum EngineEvent {
     DecodedFormat(StreamFormat),
     /// Format handed to the output sink.
     OutputFormat(StreamFormat),
+    /// The output was about to be handed another format mid-stream: a
+    /// stream joined gaplessly at another rate (`new_stream`), or the
+    /// processing chain renegotiated. Nothing in the new format reached the
+    /// output, and nothing will until the stream is opened anew.
+    FormatChanged {
+        from: StreamFormat,
+        to: StreamFormat,
+        new_stream: bool,
+    },
+}
+
+impl std::fmt::Display for StreamFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {} Hz, {} ch", self.sample_format, self.sample_rate, self.channels)
+    }
+}
+
+impl StreamFormat {
+    pub fn from_info(audio: &gstreamer_audio::AudioInfo) -> Self {
+        Self {
+            sample_format: audio.format().to_str().to_string(),
+            bits: audio.depth(),
+            float: audio.format_info().is_float(),
+            sample_rate: audio.rate(),
+            channels: audio.channels(),
+        }
+    }
 }
 
 #[cfg(test)]
