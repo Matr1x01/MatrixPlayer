@@ -23,7 +23,7 @@ export const useDsp = create<DspStore>()(() => ({
   loaded: false,
   settings: null,
   presets: [],
-  status: { replayGainSource: 'off', replayGainDb: 0, limiting: false, sampleRate: 0, channels: 0 },
+  status: { replayGainSource: 'off', replayGainDb: 0, limiting: false, clipping: false, sampleRate: 0, channels: 0 },
 }));
 
 let pending: DspSettings | null = null;

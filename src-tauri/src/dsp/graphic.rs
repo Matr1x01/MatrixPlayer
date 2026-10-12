@@ -36,7 +36,7 @@
 
 use serde::Serialize;
 
-use super::biquad::{Coeffs, max_boost_db};
+use super::biquad::{Coeffs, added_loudness_db, max_boost_db};
 use super::settings::{EqBand, EqCurve, EqMode, FilterKind, GRAPHIC_10, GRAPHIC_31};
 
 /// Gain (dB) the interaction matrix is sampled at (paper, Sec. III-A).
@@ -72,6 +72,9 @@ pub struct EqResponse {
     /// The largest boost anywhere in the audible range (what auto preamp
     /// takes back beyond its allowance).
     pub max_boost_db: f64,
+    /// The loudness the curve adds to music (auto preamp takes back at
+    /// least this).
+    pub loudness_db: f64,
 }
 
 /// The response of `curve` at `rate`, at each of `freqs` (Hz). Frequencies
@@ -102,7 +105,12 @@ pub fn curve_response(curve: &EqCurve, rate: f64, freqs: &[f64], cache: &mut Gra
     };
     let centres: Vec<f64> = live.iter().map(|(i, _)| slots[*i].freq).collect();
     let coeffs: Vec<Coeffs> = live.into_iter().map(|(_, c)| c).collect();
-    EqResponse { total, bands, max_boost_db: max_boost_db(&coeffs, &centres, rate) }
+    EqResponse {
+        total,
+        bands,
+        max_boost_db: max_boost_db(&coeffs, &centres, rate),
+        loudness_db: added_loudness_db(&coeffs, rate),
+    }
 }
 
 /// The solver last used, rebuilt when the layout or the rate changes.

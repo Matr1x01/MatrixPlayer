@@ -818,6 +818,70 @@ mod tests {
         assert!((db - (20.0 * 0.2f64.log10() + 6.0)).abs() < 0.3, "output peak {db:.2} dBFS");
     }
 
+    /// Moving a band while a track plays is heard within a buffer or two,
+    /// at the level it asks for, and turning the EQ back to flat restores
+    /// the level exactly.
+    #[test]
+    fn an_eq_change_during_playback_is_heard_at_once() {
+        use crate::dsp::settings::{DspSettings, EqBand, EqCurve};
+
+        gst::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.flac");
+        write_flac(&a, 4.0, "A");
+        let bin = gst::parse::bin_from_description("fakesink name=out sync=true signal-handoffs=true", true).unwrap();
+        let heard = Arc::new(Mutex::new(Vec::<(Instant, f64)>::new()));
+        let log = heard.clone();
+        bin.by_name("out").unwrap().connect("handoff", false, move |args| {
+            let buffer = args[1].get::<gst::Buffer>().ok()?;
+            let map = buffer.map_readable().ok()?;
+            let peak = map
+                .as_slice()
+                .chunks_exact(8)
+                .map(|b| f64::from_ne_bytes(b.try_into().unwrap()).abs())
+                .fold(0.0, f64::max);
+            log.lock().unwrap().push((Instant::now(), peak));
+            None
+        });
+        let (tx, _rx) = unbounded_channel();
+        let out =
+            output::Output { sink: bin.upcast(), backend: output::OutputBackend::Auto, device: None, exclusive: false };
+        let engine = AudioEngine::new(tx, out).unwrap();
+        let flat = DspSettings { eq_enabled: true, auto_preamp: false, ..DspSettings::default() };
+        let mut boosted = flat.clone();
+        boosted.a = EqCurve { parametric: vec![EqBand::peak(440.0, 6.0, 1.0)], ..EqCurve::default() };
+        engine.dsp().apply(&flat);
+        engine.set_volume(1.0);
+        engine.load(&path_to_uri(&a).unwrap(), None, true).unwrap();
+
+        let level = |from: Instant, to: Instant| {
+            let peak =
+                heard.lock().unwrap().iter().filter(|(t, _)| *t > from && *t < to).map(|(_, p)| *p).fold(0.0, f64::max);
+            20.0 * peak.log10()
+        };
+        // The first buffer rendered at or above `db`, after `since`.
+        let reached = |since: Instant, db: f64| {
+            heard.lock().unwrap().iter().find(|(t, p)| *t > since && 20.0 * p.log10() >= db).map(|(t, _)| *t - since)
+        };
+        std::thread::sleep(Duration::from_millis(1000));
+        let boosted_at = Instant::now();
+        engine.dsp().apply(&boosted);
+        std::thread::sleep(Duration::from_millis(1000));
+        let flat_at = Instant::now();
+        engine.dsp().apply(&flat);
+        std::thread::sleep(Duration::from_millis(1000));
+
+        let tone = 20.0 * 0.2f64.log10();
+        let before = level(boosted_at - Duration::from_millis(500), boosted_at);
+        assert!((before - tone).abs() < 0.2, "flat: {before:.2} dBFS");
+        let delay = reached(boosted_at, tone + 5.8).expect("the boost was heard");
+        assert!(delay < Duration::from_millis(250), "the boost was heard after {delay:?}");
+        let during = level(flat_at - Duration::from_millis(500), flat_at);
+        assert!((during - (tone + 6.0)).abs() < 0.2, "boosted: {during:.2} dBFS");
+        let after = level(flat_at + Duration::from_millis(500), flat_at + Duration::from_millis(1000));
+        assert!((after - tone).abs() < 0.05, "flat again: {after:.2} dBFS");
+    }
+
     /// Plays a 440 Hz fixture at 0.2 of full scale through the whole engine
     /// with `settings` and the volume at 100%; returns the output peak (dBFS).
     fn output_peak_db(settings: &crate::dsp::settings::DspSettings) -> f64 {

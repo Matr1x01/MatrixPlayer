@@ -7,8 +7,8 @@
 //! ```text
 //! playsink queue ─ audioconvert ─ F64 ─ processor ─ audioresample ─ audioconvert ─ output sink
 //!                                        │ ReplayGain, preamp, EQ, balance,
-//!                                        │ width, crossfeed, fades, limiter,
-//!                                        │ volume
+//!                                        │ width, crossfeed, fades, limiter
+//!                                        │ (when on), volume
 //!                                        └─ analysis tap (spectrum, meters)
 //! ```
 //!
@@ -278,6 +278,7 @@ impl DspControl {
             replay_gain_preamp_db: settings.replay_gain_preamp_db,
             replay_gain_fallback_db: settings.replay_gain_fallback_db,
             clipping_prevention: settings.clipping_prevention,
+            limiter: settings.limiter,
             soft_fades: settings.soft_fades,
         });
         self.to_output.set_property_from_str("dithering", if settings.dither { "tpdf" } else { "none" });
